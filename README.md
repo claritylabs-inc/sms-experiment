@@ -23,8 +23,7 @@ User sends iMessage/SMS ──► Linq (primary) ──► Webhook ──► Con
 
 | Channel | Provider | Number | Protocol | Role |
 |---------|----------|--------|----------|------|
-| **Linq** | linqapp.com | +1 (347) 307-4526 | iMessage / RCS / SMS | Primary |
-| **OpenPhone** | openphone.com | +1 (289) 212-7916 | SMS | Fallback |
+| **Linq** | linqapp.com | +1 (929) 443-0153 | iMessage / RCS / SMS | Primary |
 
 **Routing:** If a user has a `linqChatId` (arrived via Linq), all outbound goes through Linq. If Linq fails, falls back to OpenPhone SMS. Legacy OpenPhone users continue on SMS.
 
@@ -138,7 +137,7 @@ Set in the [Convex dashboard](https://dashboard.convex.dev). Use `--deployment k
 |----------|-------------|
 | `LINQ_API_KEY` | Linq Partner API v3 key |
 | `LINQ_WEBHOOK_SECRET` | HMAC-SHA256 signing secret for Linq webhook verification |
-| `LINQ_PHONE_NUMBER` | Linq phone number (`+13473074526`) |
+| `LINQ_PHONE_NUMBER` | Linq phone number (`+19294430153`) |
 | `OPENPHONE_API_KEY` | OpenPhone API key |
 | `OPENPHONE_PHONE_NUMBER_ID` | Phone number ID to send from |
 | `OPENPHONE_WEBHOOK_SECRET` | Webhook signature (exists but not validated yet) |
@@ -159,8 +158,7 @@ No local Convex — `npm run dev` syncs directly to `kindhearted-labrador-258`.
 
 ### Testing
 
-1. **Linq (primary):** iMessage to (347) 307-4526
-2. **OpenPhone (fallback):** SMS to (289) 212-7916
+1. **Linq (primary):** iMessage to (929) 443-0153
 3. Follow the conversation: pick a category, upload a policy, ask questions
 
 ### Resetting a Test User

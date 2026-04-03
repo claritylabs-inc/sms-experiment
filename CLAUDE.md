@@ -32,9 +32,7 @@ Spot supports two messaging channels. **Linq is primary**, OpenPhone is fallback
 
 | Channel | Provider | Number | Protocol | Status |
 |---------|----------|--------|----------|--------|
-| **Linq** | linqapp.com | +1 (347) 307-4526 | iMessage / RCS / SMS | Active (primary) |
-| **OpenPhone** | openphone.com | +1 (289) 212-7916 (CA) | SMS only | Active (fallback) |
-| **OpenPhone** | openphone.com | +1 (929) 642-1213 (US) | SMS only | Pending A2P registration |
+| **Linq** | linqapp.com | +1 (929) 443-0153 | iMessage / RCS / SMS | Active (primary) |
 
 ### Channel routing logic (`sendAndLog` in `process.ts`)
 
@@ -198,9 +196,7 @@ sms-experiment/
 
 | Number | Provider | Status |
 |--------|----------|--------|
-| +1 (347) 307-4526 | Linq | Active — iMessage/RCS/SMS (primary) |
-| +1 (289) 212-7916 | OpenPhone (CA) | Active — SMS fallback |
-| +1 (929) 642-1213 | OpenPhone (US) | Pending A2P registration |
+| +1 (929) 443-0153 | Linq | Active — iMessage/RCS/SMS (primary) |
 
 ---
 
@@ -212,7 +208,7 @@ All env vars are set in the Convex dashboard, not locally. Prod: `cheery-giraffe
 |----------|-------------|
 | `LINQ_API_KEY` | Linq Partner API v3 key |
 | `LINQ_WEBHOOK_SECRET` | HMAC-SHA256 signing secret for Linq webhook verification |
-| `LINQ_PHONE_NUMBER` | Linq phone number (`+13473074526`) — used as `from` when creating chats |
+| `LINQ_PHONE_NUMBER` | Linq phone number (`+19294430153`) — used as `from` when creating chats |
 | `OPENPHONE_API_KEY` | OpenPhone API key |
 | `OPENPHONE_PHONE_NUMBER_ID` | Phone number ID to send from (currently `PN3iSAb7ZR`) |
 | `OPENPHONE_WEBHOOK_SECRET` | Webhook signature verification (not currently validated in code) |
@@ -240,7 +236,7 @@ npm run dev:all
 There is no local Convex — `npm run dev` syncs to the dev deployment (`kindhearted-labrador-258`). Production is `cheery-giraffe-339`.
 
 ### Testing the messaging flow
-1. **Linq (primary):** Text anything to (347) 307-4526 via iMessage
+1. **Linq (primary):** Text anything to (929) 443-0153 via iMessage
 2. **OpenPhone (fallback):** Text anything to (289) 212-7916
 3. Follow the conversation (category → upload → ask questions)
 4. Test phone: Adyan's number 6479221805
