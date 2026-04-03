@@ -100,3 +100,14 @@ export const stopTyping = internalAction({
     });
   },
 });
+
+// Mark chat as read — sends iMessage read receipt ("Seen") to the sender
+export const markRead = internalAction({
+  args: { chatId: v.string() },
+  handler: async (_ctx, args) => {
+    await fetch(`${LINQ_API_BASE}/chats/${args.chatId}/read`, {
+      method: "POST",
+      headers: getLinqHeaders(),
+    });
+  },
+});
