@@ -1297,6 +1297,14 @@ export const reextractPolicy = internalAction({
   },
   handler: async (ctx, args) => {
     try {
+      // Progress: let the user know we're starting
+      await sendAndLog(ctx, args.userId, args.phone, "Got it — pulling up your original document and re-reading it now", args.linqChatId, args.imessageSender);
+
+      // Start typing for Linq users
+      if (args.linqChatId) {
+        try { await ctx.runAction(internal.sendLinq.startTyping, { chatId: args.linqChatId }); } catch (_) {}
+      }
+
       // Set policy back to processing
       await ctx.runMutation(internal.policies.updateExtracted, {
         policyId: args.policyId,
@@ -1325,6 +1333,9 @@ export const reextractPolicy = internalAction({
 
       const { documentType } = classifyResult;
 
+      // Progress: extraction underway
+      await sendAndLog(ctx, args.userId, args.phone, "Running it through the latest extraction — pulling out coverages and limits", args.linqChatId, args.imessageSender);
+
       let applied: any;
       if (documentType === "quote") {
         const quoteResult = await extractQuoteFromPdf(pdfBase64, { concurrency: 3 });
@@ -1337,6 +1348,11 @@ export const reextractPolicy = internalAction({
       }
 
       const detectedCategory = detectCategory(applied);
+
+      // Stop typing before sending results
+      if (args.linqChatId) {
+        try { await ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }); } catch (_) {}
+      }
 
       await ctx.runMutation(internal.policies.updateExtracted, {
         policyId: args.policyId,
@@ -1356,11 +1372,15 @@ export const reextractPolicy = internalAction({
 
       const summary = buildPolicySummary(applied, detectedCategory);
       await sendBurst(ctx, args.userId, args.phone, [
-        "Re-extracted your policy with the latest pipeline — here's the updated breakdown",
+        "All done — here's the updated breakdown",
         summary,
+        "Ask me anything about the updated info",
       ], args.linqChatId, args.imessageSender);
     } catch (error: any) {
       console.error("Re-extraction failed:", error);
+      if (args.linqChatId) {
+        try { await ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }); } catch (_) {}
+      }
       await ctx.runMutation(internal.policies.updateExtracted, {
         policyId: args.policyId,
         status: "failed",
