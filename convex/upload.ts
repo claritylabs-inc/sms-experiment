@@ -8,23 +8,54 @@ import {
   extractQuoteFromPdf,
   applyExtracted,
   applyExtractedQuote,
+  sanitizeNulls,
 } from "@claritylabs/cl-sdk";
 
-function detectCategory(extracted: any): "auto" | "tenant" | "other" {
+/** Maps SDK policyTypes array to a user-friendly category string. */
+function detectCategoryFromPolicyTypes(policyTypes: string[]): string {
+  if (!policyTypes || policyTypes.length === 0) return "other";
+  const t = policyTypes[0];
+  if (t === "personal_auto") return "auto";
+  if (t === "renters_ho4") return "renters";
+  if (["homeowners_ho3", "homeowners_ho5", "condo_ho6", "dwelling_fire", "mobile_home"].includes(t)) return "homeowners";
+  if (t === "flood_nfip" || t === "flood_private") return "flood";
+  if (t === "earthquake") return "earthquake";
+  if (t === "personal_umbrella") return "umbrella";
+  if (t === "pet") return "pet";
+  if (t === "travel") return "travel";
+  if (t === "watercraft" || t === "recreational_vehicle") return "recreational";
+  if (t === "farm_ranch") return "farm";
+  if (t.startsWith("commercial_") || t.startsWith("bop") || t.startsWith("workers_comp") || t.startsWith("professional_liability")) return "commercial";
+  return "other";
+}
+
+function detectCategoryKeyword(extracted: any): string {
   const text = JSON.stringify(extracted).toLowerCase();
   const autoKeywords = [
     "auto", "automobile", "vehicle", "car", "collision", "comprehensive",
     "bodily injury", "uninsured motorist", "underinsured", "motor", "driver", "vin",
   ];
   const tenantKeywords = [
-    "tenant", "renter", "renters", "dwelling", "personal property",
+    "tenant", "renter", "renters", "personal property",
     "habitational", "apartment", "lease", "landlord", "contents",
+  ];
+  const homeKeywords = [
+    "homeowners", "homeowner", "ho-3", "ho-5", "ho3", "ho5", "dwelling",
+    "condo", "ho-6", "ho6",
   ];
   const autoScore = autoKeywords.filter((k) => text.includes(k)).length;
   const tenantScore = tenantKeywords.filter((k) => text.includes(k)).length;
-  if (autoScore > tenantScore && autoScore >= 2) return "auto";
-  if (tenantScore > autoScore && tenantScore >= 2) return "tenant";
+  const homeScore = homeKeywords.filter((k) => text.includes(k)).length;
+  if (homeScore > autoScore && homeScore > tenantScore && homeScore >= 2) return "homeowners";
+  if (autoScore > tenantScore && autoScore > homeScore && autoScore >= 2) return "auto";
+  if (tenantScore > autoScore && tenantScore > homeScore && tenantScore >= 2) return "renters";
   return "other";
+}
+
+function detectCategory(applied: any): string {
+  const policyTypes = applied.policyTypes;
+  if (policyTypes && policyTypes.length > 0) return detectCategoryFromPolicyTypes(policyTypes);
+  return detectCategoryKeyword(applied);
 }
 
 function buildPolicySummary(applied: any): string {
@@ -121,7 +152,7 @@ export const processUploadedPolicy = internalAction({
       const [, classifyResult, policyExtractResult] = await Promise.all([
         sendNotification(ctx, args.userId, args.phone, "Got your upload — reading through it now", linqChatId, imessageSender),
         classifyDocumentType(pdfBase64),
-        extractFromPdf(pdfBase64).catch(() => null),
+        extractFromPdf(pdfBase64, { concurrency: 3 }).catch(() => null),
       ]);
 
       const { documentType } = classifyResult;
@@ -135,10 +166,10 @@ export const processUploadedPolicy = internalAction({
           ctx.runMutation(internal.policies.create, {
             userId: args.userId, category: "other", documentType, pdfStorageId: args.storageId,
           }),
-          extractQuoteFromPdf(pdfBase64),
+          extractQuoteFromPdf(pdfBase64, { concurrency: 3 }),
         ]);
         extracted = quoteResult.extracted;
-        applied = applyExtractedQuote(extracted);
+        applied = sanitizeNulls(applyExtractedQuote(extracted));
         var finalPolicyId = policyId;
       } else {
         // Policy: extraction already done in parallel
@@ -147,11 +178,11 @@ export const processUploadedPolicy = internalAction({
         });
         if (policyExtractResult) {
           extracted = policyExtractResult.extracted;
-          applied = applyExtracted(extracted);
+          applied = sanitizeNulls(applyExtracted(extracted));
         } else {
-          const result = await extractFromPdf(pdfBase64);
+          const result = await extractFromPdf(pdfBase64, { concurrency: 3 });
           extracted = result.extracted;
-          applied = applyExtracted(extracted);
+          applied = sanitizeNulls(applyExtracted(extracted));
         }
         var finalPolicyId = policyId;
       }
@@ -168,9 +199,11 @@ export const processUploadedPolicy = internalAction({
           expirationDate: applied.expirationDate || undefined,
           premium: applied.premium || undefined,
           insuredName: applied.insuredName || undefined,
+          summary: applied.summary || undefined,
           coverages: applied.coverages || undefined,
           rawExtracted: applied,
           category: detectedCategory,
+          policyTypes: applied.policyTypes || undefined,
           status: "ready",
         }),
         ctx.runMutation(internal.users.updateState, {

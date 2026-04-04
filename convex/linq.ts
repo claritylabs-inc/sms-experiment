@@ -55,8 +55,6 @@ export const webhook = httpAction(async (ctx, request) => {
 
   const body = JSON.parse(rawBody);
 
-  // V3 actual payload structure (2026-02-03):
-  // { api_version, event_type, event_id, data: { id, chat: { id }, sender_handle: { handle }, parts: [...], ... } }
   const data = body.data;
   if (!data) {
     console.error("Linq webhook missing data:", body);
@@ -72,7 +70,6 @@ export const webhook = httpAction(async (ctx, request) => {
     return new Response("bad request", { status: 400 });
   }
 
-  // Sender is data.sender_handle.handle (E.164 phone)
   const senderHandle: string = data.sender_handle?.handle || "";
 
   if (!senderHandle) {
@@ -84,8 +81,6 @@ export const webhook = httpAction(async (ctx, request) => {
     ? senderHandle
     : `+1${senderHandle.replace(/\D/g, "")}`;
 
-  // Parts are top-level in data: data.parts[]
-  // { type: "text", value: "..." } or { type: "media", url: "...", mime_type: "..." }
   const parts: Array<{ type: string; value?: string; url?: string; mime_type?: string }> =
     data.parts || [];
 
@@ -125,7 +120,7 @@ export const webhook = httpAction(async (ctx, request) => {
 
   const { userId, state, uploadToken, linqChatId, isNewUser } = result;
 
-  // Route — same state machine as OpenPhone, but pass linqChatId
+  // Route based on state machine
   if (isNewUser) {
     await ctx.scheduler.runAfter(0, internal.process.sendWelcome, {
       userId,
@@ -148,14 +143,31 @@ export const webhook = httpAction(async (ctx, request) => {
         linqChatId,
       }
     );
+  } else if (state === "awaiting_email") {
+    // User is providing their email address
+    await ctx.scheduler.runAfter(0, internal.process.handleEmailCollection, {
+      userId,
+      phone,
+      input: text,
+      linqChatId,
+    });
+  } else if (state === "awaiting_email_confirm") {
+    // User is confirming/cancelling/undoing an email
+    await ctx.scheduler.runAfter(0, internal.process.handleEmailConfirmation, {
+      userId,
+      phone,
+      input: text,
+      linqChatId,
+    });
   } else if (state === "awaiting_policy") {
     if (hasAttachment) {
       for (const attachment of mediaParts) {
-        await ctx.scheduler.runAfter(0, internal.process.processPolicy, {
+        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
           userId,
           mediaUrl: attachment.url || "",
           mediaType: attachment.mime_type || "application/pdf",
           phone,
+          userText: text,
           linqChatId,
         });
       }
@@ -169,13 +181,15 @@ export const webhook = httpAction(async (ctx, request) => {
       });
     }
   } else {
+    // active state (or any other)
     if (hasAttachment) {
       for (const attachment of mediaParts) {
-        await ctx.scheduler.runAfter(0, internal.process.processPolicy, {
+        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
           userId,
           mediaUrl: attachment.url || "",
           mediaType: attachment.mime_type || "application/pdf",
           phone,
+          userText: text,
           linqChatId,
         });
       }

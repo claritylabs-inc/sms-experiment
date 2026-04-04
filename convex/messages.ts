@@ -8,7 +8,8 @@ export const log = internalMutation({
     body: v.string(),
     hasAttachment: v.boolean(),
     openPhoneId: v.optional(v.string()),
-    channel: v.optional(v.string()), // "openphone" | "linq"
+    channel: v.optional(v.string()), // "openphone" | "linq" | "email"
+    imageStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("messages", {

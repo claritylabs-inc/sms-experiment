@@ -18,7 +18,7 @@ export const webhook = httpAction(async (ctx, request) => {
   const media: Array<{ url: string; type: string }> = message.media || [];
   const messageId: string = message.id;
 
-  // Phase 1: Claim this webhook — if someone else already claimed it, bail
+  // Phase 1: Claim this webhook
   const { claimed } = await ctx.runMutation(internal.ingest.claimWebhook, {
     openPhoneId: messageId,
   });
@@ -26,7 +26,7 @@ export const webhook = httpAction(async (ctx, request) => {
     return new Response("duplicate", { status: 200 });
   }
 
-  // Phase 2: Now we're guaranteed to be the only handler — process the message
+  // Phase 2: Ingest
   const result = await ctx.runMutation(internal.ingest.ingestMessage, {
     openPhoneId: messageId,
     from,
@@ -40,8 +40,7 @@ export const webhook = httpAction(async (ctx, request) => {
 
   const { userId, state, uploadToken, linqChatId, isNewUser } = result;
 
-  // Route — all async via scheduler
-  // Pass linqChatId so process actions can route replies through Linq if available
+  // Route based on state machine
   if (isNewUser) {
     await ctx.scheduler.runAfter(0, internal.process.sendWelcome, {
       userId,
@@ -60,14 +59,29 @@ export const webhook = httpAction(async (ctx, request) => {
       mediaType: media.length > 0 ? media[0].type : undefined,
       linqChatId,
     });
+  } else if (state === "awaiting_email") {
+    await ctx.scheduler.runAfter(0, internal.process.handleEmailCollection, {
+      userId,
+      phone: from,
+      input: text,
+      linqChatId,
+    });
+  } else if (state === "awaiting_email_confirm") {
+    await ctx.scheduler.runAfter(0, internal.process.handleEmailConfirmation, {
+      userId,
+      phone: from,
+      input: text,
+      linqChatId,
+    });
   } else if (state === "awaiting_policy") {
     if (media.length > 0) {
       for (const attachment of media) {
-        await ctx.scheduler.runAfter(0, internal.process.processPolicy, {
+        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
           userId,
           mediaUrl: attachment.url,
           mediaType: attachment.type || "application/pdf",
           phone: from,
+          userText: text,
           linqChatId,
         });
       }
@@ -81,13 +95,15 @@ export const webhook = httpAction(async (ctx, request) => {
       });
     }
   } else {
+    // active state
     if (media.length > 0) {
       for (const attachment of media) {
-        await ctx.scheduler.runAfter(0, internal.process.processPolicy, {
+        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
           userId,
           mediaUrl: attachment.url,
           mediaType: attachment.type || "application/pdf",
           phone: from,
+          userText: text,
           linqChatId,
         });
       }

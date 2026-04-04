@@ -83,6 +83,36 @@ export const updateState = internalMutation({
   },
 });
 
+export const updateEmail = internalMutation({
+  args: {
+    userId: v.id("users"),
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, { email: args.email });
+  },
+});
+
+export const updateLastImageId = internalMutation({
+  args: {
+    userId: v.id("users"),
+    lastImageId: v.id("_storage"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, { lastImageId: args.lastImageId });
+  },
+});
+
+export const setAutoSendEmails = internalMutation({
+  args: {
+    userId: v.id("users"),
+    autoSendEmails: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, { autoSendEmails: args.autoSendEmails });
+  },
+});
+
 // Public — upload page calls this to get a storage upload URL
 export const generateUploadUrl = mutation({
   handler: async (ctx) => {

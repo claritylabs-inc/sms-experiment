@@ -1,6 +1,6 @@
 # Spot — Insurance Policy Vault over iMessage/SMS
 
-Spot is a messaging-first insurance assistant by [Clarity Labs](https://claritylabs.inc). Users text a phone number, send their insurance policy PDFs, and Spot parses the document, stores structured data, and answers coverage questions — all over iMessage, RCS, or SMS. No app, no login, no dashboard.
+Spot is a messaging-first insurance assistant by [Clarity Labs](https://claritylabs.inc). Users text a phone number, send their insurance policy PDFs or photos, and Spot parses the document, stores structured data, answers coverage questions, sends proof of insurance emails, and sets expiration reminders — all over iMessage, RCS, or SMS. No app, no login, no dashboard.
 
 ## How It Works
 
@@ -9,11 +9,15 @@ User sends iMessage/SMS ──► Linq (primary) ──► Webhook ──► Con
                             OpenPhone (fallback) ──┘          │
                                                  ┌────────────┼────────────┐
                                                  ▼            ▼            ▼
-                                            Welcome      Extract PDF    Answer
-                                            flow         via CL SDK     questions
-                                                 │            │         via Claude
-                                                 ▼            ▼            │
-                                            Linq / OpenPhone ◄── Convex DB ◄┘
+                                            Welcome      Process media   Agentic Q&A
+                                            flow         (PDF/photo)    (tool_use)
+                                                 │            │            │
+                                                 ▼            ▼            ▼
+                                            Category    Extract/Vision  Email / COI /
+                                            selection   pipeline       Reminders
+                                                 │            │            │
+                                                 ▼            ▼            ▼
+                                           Linq / OpenPhone ◄── Convex DB ◄┘
                                                  │
                                                  ▼
                                            User gets reply
@@ -30,16 +34,45 @@ User sends iMessage/SMS ──► Linq (primary) ──► Webhook ──► Con
 ### The Conversation State Machine
 
 ```
-[first text] ──► awaiting_category ──► awaiting_policy ──► active
-                 "auto, renters,        "send me your       Q&A mode +
-                  or something else?"    policy PDF"         accepts new policies
+[first text] ──► awaiting_category ──► awaiting_policy ──► active ◄──► awaiting_email
+                 "auto, homeowners,     "send me your       Q&A + actions    │
+                  renters, or other?"    policy PDF/photo"   (tool_use)       │
+                                                                     awaiting_email_confirm
+                                                                     "reply send or cancel"
 ```
 
 | State | What Spot expects | What happens |
 |-------|-------------------|--------------|
-| `awaiting_category` | Text reply: "auto", "renters", "other", or 1/2/3 | Parses category, moves to `awaiting_policy` |
-| `awaiting_policy` | PDF attachment (iMessage/MMS) or web upload | Extracts policy data, sends summary, moves to `active` |
-| `active` | Any text question, or another PDF | Questions get AI answers from policy data; PDFs get processed as new policies |
+| `awaiting_category` | Text: "auto", "homeowners", "renters", "other", or 1/2/3/4 | Parses category, moves to `awaiting_policy` |
+| `awaiting_policy` | PDF/photo attachment or web upload | Extracts policy data, sends summary, moves to `active` |
+| `active` | Any text or attachment | Questions get agentic AI answers; PDFs/photos get processed; email/reminder actions via tools |
+| `awaiting_email` | Email address text | Validates and stores email, returns to `active` |
+| `awaiting_email_confirm` | "send" / "cancel" / "undo" | Confirms or cancels pending email action |
+
+### Media Processing
+
+Spot handles both PDFs and photos:
+
+| Media Type | Action |
+|-----------|--------|
+| **PDF** | Direct to extraction pipeline (cl-sdk) |
+| **JPEG/PNG** (document) | Classified by Claude Haiku → embedded in PDF via pdf-lib → extraction pipeline |
+| **JPEG/PNG** (contextual) | Classified by Claude Haiku → stored for vision Q&A with Claude Sonnet |
+| **HEIC/WebP** (document) | User prompted to resend as PDF or screenshot |
+
+### Agentic Q&A (Active State)
+
+When a user with processed policies sends a message, Spot uses Claude Sonnet with **tool_use** to decide what to do:
+
+| Tool | What it does |
+|------|-------------|
+| `send_email` | Send proof of insurance or coverage details to someone (user CC'd) |
+| `generate_coi` | Create and email a Certificate of Insurance summary |
+| `set_reminder` | Set a text reminder before a policy expires (default: 30 days) |
+| `request_email` | Ask user for their email (needed before sending emails) |
+| `send_upload_link` | Send the user their upload link for another policy |
+
+**Email safety:** Emails require user confirmation ("reply send or cancel") with a 20s undo window after confirmation. Users can enable `/autosend on` to skip confirmation and send immediately.
 
 ### Policy Extraction Pipeline (Parallelized)
 
@@ -47,52 +80,47 @@ Both upload paths (message attachment + web upload) use the same parallelized pi
 
 ```
 Step 1 (parallel):  Ack message  +  PDF download
-Step 2 (parallel):  Storage      +  classifyDocumentType  +  extractFromPdf (optimistic)
+Step 2 (parallel):  Storage      +  classifyDocumentType  +  extractFromPdf (optimistic, concurrency: 3)
 Step 3 (parallel):  Create record + Progress message + Typing indicator + (if quote) extractQuoteFromPdf
-Step 4 (parallel):  updateExtracted + updateState + stopTyping
+Step 4 (parallel):  updateExtracted + sanitizeNulls + updateState + stopTyping
 Step 5:             Send summary burst
 ```
-
-For the common policy case, extraction runs alongside classification — cutting total time by the classification duration (~3-5s). Quotes require a second extraction call but the record creation and progress messaging still happen in parallel.
-
-### Q&A (Active State)
-
-When a user with processed policies asks a question:
-
-1. All `"ready"` policies are loaded for the user
-2. System prompt is built via CL SDK's `buildAgentSystemPrompt` (tuned for SMS + direct intent)
-3. Compliance guardrails are added (no selling, no legal/financial advice, natural texting tone)
-4. Policy data is injected as document context via `buildDocumentContext`
-5. Claude Sonnet generates a response (Linq: 800 tokens, OpenPhone: 400 tokens + 1,550 char truncation)
-6. Reply is sent via the user's channel
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend / DB | [Convex](https://convex.dev) — serverless TypeScript, real-time, scheduled functions |
+| Backend / DB | [Convex](https://convex.dev) — serverless TypeScript, real-time, scheduled functions, cron jobs |
 | Messaging (primary) | [Linq API v3](https://linqapp.com) — iMessage, RCS, SMS via single API |
 | Messaging (fallback) | [OpenPhone API](https://www.openphone.com) — SMS |
-| Document AI | `@claritylabs/cl-sdk` — classify, extract, enrich insurance documents |
-| LLM | Claude Sonnet via `@ai-sdk/anthropic` + Vercel AI SDK |
+| Document AI | `@claritylabs/cl-sdk` v1.4 — classify, extract, enrich, personal lines, sanitizeNulls |
+| LLM | Claude Sonnet via `@ai-sdk/anthropic` + Vercel AI SDK (with tool_use) |
+| Vision AI | Claude Haiku 4.5 (image classification) + Claude Sonnet (vision Q&A) |
+| Email | [Resend](https://resend.com) — transactional emails with undo window |
 | Frontend | Next.js 15 + React 19 (upload page only) |
-| PDF parsing | `pdf-lib` |
+| PDF parsing | `pdf-lib` (extraction + image→PDF embedding) |
 
 ## Project Structure
 
 ```
 sms-experiment/
 ├── convex/                     # All backend logic
-│   ├── schema.ts               # Database schema (users, policies, messages, webhookLocks)
+│   ├── schema.ts               # Database schema (users, policies, messages, pendingEmails, reminders, webhookLocks)
 │   ├── http.ts                 # HTTP router — /openphone/webhook + /linq/webhook
 │   ├── openphone.ts            # OpenPhone webhook handler (SMS inbound)
 │   ├── linq.ts                 # Linq webhook handler (iMessage/RCS/SMS inbound)
 │   ├── ingest.ts               # Dedup (claimWebhook) + user upsert + message logging
-│   ├── process.ts              # Core logic — welcome, categories, extraction, Q&A
+│   ├── process.ts              # Core logic — welcome, categories, media routing, extraction, agentic Q&A, email/reminder state handlers
+│   ├── imageUtils.ts           # Image detection, PDF embedding, vision intent classification
+│   ├── email.ts                # Email mutations, queries, HTML templates (proof of insurance, COI, coverage)
+│   ├── emailActions.ts         # Email send action (Resend API)
+│   ├── reminders.ts            # Reminder CRUD mutations/queries
+│   ├── reminderActions.ts      # Reminder check action (sends texts for due reminders)
+│   ├── crons.ts                # Convex cron — checks reminders hourly
 │   ├── send.ts                 # OpenPhone outbound SMS wrapper
 │   ├── sendLinq.ts             # Linq outbound — send message, create chat, typing indicators
 │   ├── messages.ts             # Message CRUD
-│   ├── users.ts                # User CRUD + upload token + public mutations for upload page
+│   ├── users.ts                # User CRUD + email + lastImageId + autoSendEmails + upload page mutations
 │   ├── policies.ts             # Policy CRUD
 │   ├── upload.ts               # Web upload flow — processes PDFs from the upload page
 │   └── admin.ts                # Admin utilities (deleteUserByPhone for testing)
@@ -104,29 +132,15 @@ sms-experiment/
 └── PRD.md                      # Original product requirements
 ```
 
-## Key Design Decisions
-
-**Linq-first channel routing** — `sendAndLog` tries Linq (if user has `linqChatId`), falls back to OpenPhone on failure. Linq users get typing indicators, longer AI responses, and iMessage-native PDF upload. Channel is logged on every message.
-
-**Parallelized extraction** — Classification, storage upload, and optimistic policy extraction all run via `Promise.all`. For the majority case (policies), extraction completes alongside classification. Progress messages keep users informed during the pipeline.
-
-**Webhook HMAC verification** — Linq webhooks are verified via HMAC-SHA256 (raw UTF-8 secret, `{timestamp}.{body}` payload, hex output). OpenPhone verification is not yet implemented.
-
-**Webhook dedup** — Both channels use `claimWebhook`, an atomic Convex mutation writing to `webhookLocks`. Linq keys are prefixed `linq_`.
-
-**Async processing** — Webhook handlers return 200 immediately, scheduling all processing via `ctx.scheduler.runAfter(0, ...)`.
-
-**sendBurst pattern** — Multi-message responses have 0.8–1.5s random delays to feel conversational.
-
-**Upload tokens instead of auth** — No login. Random 24-char tokens in upload URLs. Phone numbers masked on the upload page.
-
 ## Database
 
-Four tables in Convex:
+Six tables in Convex:
 
-- **users** — Phone number, conversation state, preferred category, upload token, `linqChatId`
-- **policies** — Extracted policy data, raw PDF reference, processing status
-- **messages** — Full message log (inbound + outbound), `channel` field tracks which provider
+- **users** — Phone number, email, conversation state, preferred category, upload token, `linqChatId`, `lastImageId`, `autoSendEmails`
+- **policies** — Extracted policy data, raw PDF reference, policyTypes, processing status
+- **messages** — Full message log (inbound + outbound), `channel` field tracks which provider, optional `imageStorageId`
+- **pendingEmails** — Emails awaiting user confirmation or in 20s undo window
+- **reminders** — Policy expiration reminders with trigger dates
 - **webhookLocks** — Dedup table keyed by message ID (from any channel)
 
 ## Environment Variables
@@ -141,7 +155,9 @@ Set in the [Convex dashboard](https://dashboard.convex.dev). Use `--deployment k
 | `OPENPHONE_API_KEY` | OpenPhone API key |
 | `OPENPHONE_PHONE_NUMBER_ID` | Phone number ID to send from |
 | `OPENPHONE_WEBHOOK_SECRET` | Webhook signature (exists but not validated yet) |
-| `ANTHROPIC_API_KEY` | Claude API key for CL SDK + Q&A |
+| `ANTHROPIC_API_KEY` | Claude API key for CL SDK + Q&A + vision |
+| `RESEND_API_KEY` | Resend API key for email sending |
+| `RESEND_FROM_EMAIL` | From address (default: `Spot <spot@spot.claritylabs.inc>`) |
 
 Frontend: `NEXT_PUBLIC_CONVEX_URL` in `.env.local` (auto-set by `npx convex dev`). `NEXT_PUBLIC_APP_URL` for upload link base URL (defaults to `https://secure.claritylabs.inc`).
 
@@ -159,7 +175,10 @@ No local Convex — `npm run dev` syncs directly to `kindhearted-labrador-258`.
 ### Testing
 
 1. **Linq (primary):** iMessage to (929) 443-0153
-3. Follow the conversation: pick a category, upload a policy, ask questions
+2. Follow the conversation: pick a category, upload a policy (PDF or photo), ask questions
+3. **Email actions:** Ask "send proof of insurance to landlord@example.com"
+4. **Reminders:** Ask "remind me before my policy expires"
+5. **Photo Q&A:** Send a photo of something and ask "what does this mean?"
 
 ### Resetting a Test User
 
@@ -177,3 +196,5 @@ Deletes the user, all their messages, and all their policies.
 - No rate limiting or spam protection
 - No commercial lines support
 - No thread management (messaging is single-threaded per number)
+- No official ACORD COI generation (COI emails are informational summaries)
+- No HEIC/WebP document extraction (users prompted to resend as JPEG/PNG/PDF)

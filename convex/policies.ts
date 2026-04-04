@@ -1,6 +1,13 @@
 import { internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 
+export const getById = internalQuery({
+  args: { policyId: v.id("policies") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.policyId);
+  },
+});
+
 export const getByUser = internalQuery({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
@@ -14,11 +21,7 @@ export const getByUser = internalQuery({
 export const create = internalMutation({
   args: {
     userId: v.id("users"),
-    category: v.union(
-      v.literal("auto"),
-      v.literal("tenant"),
-      v.literal("other")
-    ),
+    category: v.string(),
     documentType: v.union(v.literal("policy"), v.literal("quote")),
     pdfStorageId: v.optional(v.id("_storage")),
   },
@@ -46,9 +49,8 @@ export const updateExtracted = internalMutation({
     summary: v.optional(v.string()),
     coverages: v.optional(v.any()),
     rawExtracted: v.optional(v.any()),
-    category: v.optional(
-      v.union(v.literal("auto"), v.literal("tenant"), v.literal("other"))
-    ),
+    category: v.optional(v.string()),
+    policyTypes: v.optional(v.array(v.string())),
     status: v.union(
       v.literal("processing"),
       v.literal("ready"),
