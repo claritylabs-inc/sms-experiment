@@ -58,6 +58,19 @@ function detectCategory(applied: any): string {
   return detectCategoryKeyword(applied);
 }
 
+function isPartialPolicy(applied: any): boolean {
+  const hasCoverages = applied.coverages && applied.coverages.length > 0;
+  const hasCarrier = !!applied.carrier;
+  const hasPolicyNumber = !!applied.policyNumber;
+  const hasDates = !!applied.effectiveDate && !!applied.expirationDate;
+  const hasPremium = !!applied.premium;
+  if ((hasCarrier || hasPolicyNumber) && hasDates && !hasCoverages) return true;
+  const fieldCount = [hasCarrier, hasPolicyNumber, hasDates, hasPremium, hasCoverages]
+    .filter(Boolean).length;
+  if (fieldCount <= 1) return true;
+  return false;
+}
+
 function buildPolicySummary(applied: any): string {
   const parts: string[] = [];
   if (applied.carrier) parts.push(`Carrier: ${applied.carrier}`);
@@ -188,12 +201,61 @@ export const processUploadedPolicy = internalAction({
       }
 
       const detectedCategory = detectCategory(applied);
+      const isQuote = documentType === "quote";
+      const partial = isPartialPolicy(applied);
 
-      // For auto/home policies, ask about existing insurance slip
-      const isSlipEligible = documentType !== "quote" &&
+      // Check for an existing policy this could be merged into
+      const existingMatch = !isQuote
+        ? await ctx.runQuery(internal.policies.findMatchingPolicy, {
+            userId: args.userId,
+            carrier: applied.carrier || undefined,
+            policyNumber: applied.policyNumber || undefined,
+            category: detectedCategory,
+          })
+        : null;
+
+      // If we found a match, offer to merge
+      if (existingMatch && existingMatch._id !== finalPolicyId) {
+        await Promise.all([
+          ctx.runMutation(internal.policies.updateExtracted, {
+            policyId: finalPolicyId,
+            carrier: applied.carrier || undefined,
+            policyNumber: applied.policyNumber || undefined,
+            effectiveDate: applied.effectiveDate || undefined,
+            expirationDate: applied.expirationDate || undefined,
+            premium: applied.premium || undefined,
+            insuredName: applied.insuredName || undefined,
+            summary: applied.summary || undefined,
+            coverages: applied.coverages || undefined,
+            rawExtracted: applied,
+            category: detectedCategory,
+            policyTypes: applied.policyTypes || undefined,
+            status: "ready",
+          }),
+          ctx.runMutation(internal.users.setPendingMerge, {
+            userId: args.userId,
+            pendingMergePolicyId: existingMatch._id,
+            pendingMergeStorageId: args.storageId,
+          }),
+          ctx.runMutation(internal.users.updateState, {
+            userId: args.userId,
+            state: "awaiting_merge_confirm",
+          }),
+        ]);
+
+        const summary = buildPolicySummary(applied);
+        const matchLabel = existingMatch.carrier
+          ? `your ${existingMatch.carrier} policy`
+          : `your existing ${detectedCategory} policy`;
+        const msg = `Got your upload! Here's what I found:\n\n${summary}\n\nThis looks like it goes with ${matchLabel}. Want me to merge them together? (yes/no)`;
+        await sendNotification(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
+        return;
+      }
+
+      // No merge — standard flow
+      const isSlipEligible = !isQuote &&
         (detectedCategory === "auto" || detectedCategory === "homeowners");
 
-      // Finalize: update policy + user state in parallel
       await Promise.all([
         ctx.runMutation(internal.policies.updateExtracted, {
           policyId: finalPolicyId,
@@ -216,17 +278,20 @@ export const processUploadedPolicy = internalAction({
         }),
       ]);
 
-      // Text them the summary
       const summary = buildPolicySummary(applied);
-      const docLabel = documentType === "quote" ? "quote" : "policy";
+      const docLabel = isQuote ? "quote" : "policy";
 
-      if (isSlipEligible) {
-        const msg = `Got your ${detectedCategory} ${docLabel}! Here's the breakdown:\n\n${summary}\n\nDo you have an existing insurance slip for this? If so, send it over and I'll save it. Otherwise just say no and I can generate one for you anytime.`;
-        await sendNotification(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
+      let closingMsg: string;
+      if (partial) {
+        closingMsg = "Looks like this might be just a declarations page or partial document. If you have the full policy, send it over and I'll combine them for a more complete picture.";
+      } else if (isSlipEligible) {
+        closingMsg = "Do you have an existing insurance slip for this? If so, send it over and I'll save it. Otherwise just say no and I can generate one for you anytime.";
       } else {
-        const msg = `Got your ${detectedCategory} ${docLabel}! Here's the breakdown:\n\n${summary}\n\nAsk me anything about your coverage.`;
-        await sendNotification(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
+        closingMsg = "Ask me anything about your coverage.";
       }
+
+      const msg = `Got your ${detectedCategory} ${docLabel}! Here's the breakdown:\n\n${summary}\n\n${closingMsg}`;
+      await sendNotification(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
     } catch (error: any) {
       console.error("Upload processing failed:", error);
       await sendNotification(

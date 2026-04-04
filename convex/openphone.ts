@@ -73,16 +73,19 @@ export const webhook = httpAction(async (ctx, request) => {
       input: text,
       linqChatId,
     });
+  } else if (state === "awaiting_merge_confirm") {
+    await ctx.scheduler.runAfter(0, internal.process.handleMergeConfirmation, {
+      userId,
+      phone: from,
+      input: text,
+    });
   } else if (state === "awaiting_insurance_slip") {
     if (media.length > 0) {
-      for (const attachment of media) {
-        await ctx.scheduler.runAfter(0, internal.process.processInsuranceSlip, {
-          userId,
-          mediaUrl: attachment.url,
-          mediaType: attachment.type || "application/pdf",
-          phone: from,
-        });
-      }
+      await ctx.scheduler.runAfter(0, internal.process.processInsuranceSlip, {
+        userId,
+        attachments: media.map((a) => ({ url: a.url, mimeType: a.type || "application/pdf" })),
+        phone: from,
+      });
     } else {
       await ctx.scheduler.runAfter(0, internal.process.handleInsuranceSlipResponse, {
         userId,
@@ -92,17 +95,23 @@ export const webhook = httpAction(async (ctx, request) => {
       });
     }
   } else if (state === "awaiting_policy") {
-    if (media.length > 0) {
-      for (const attachment of media) {
-        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
-          userId,
-          mediaUrl: attachment.url,
-          mediaType: attachment.type || "application/pdf",
-          phone: from,
-          userText: text,
-          linqChatId,
-        });
-      }
+    if (media.length > 1) {
+      await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
+        userId,
+        attachments: media.map((a) => ({ url: a.url, mimeType: a.type || "application/pdf" })),
+        phone: from,
+        userText: text,
+        linqChatId,
+      });
+    } else if (media.length === 1) {
+      await ctx.scheduler.runAfter(0, internal.process.processMedia, {
+        userId,
+        mediaUrl: media[0].url,
+        mediaType: media[0].type || "application/pdf",
+        phone: from,
+        userText: text,
+        linqChatId,
+      });
     } else {
       await ctx.scheduler.runAfter(0, internal.process.nudgeForPolicy, {
         userId,
@@ -114,17 +123,23 @@ export const webhook = httpAction(async (ctx, request) => {
     }
   } else {
     // active state
-    if (media.length > 0) {
-      for (const attachment of media) {
-        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
-          userId,
-          mediaUrl: attachment.url,
-          mediaType: attachment.type || "application/pdf",
-          phone: from,
-          userText: text,
-          linqChatId,
-        });
-      }
+    if (media.length > 1) {
+      await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
+        userId,
+        attachments: media.map((a) => ({ url: a.url, mimeType: a.type || "application/pdf" })),
+        phone: from,
+        userText: text,
+        linqChatId,
+      });
+    } else if (media.length === 1) {
+      await ctx.scheduler.runAfter(0, internal.process.processMedia, {
+        userId,
+        mediaUrl: media[0].url,
+        mediaType: media[0].type || "application/pdf",
+        phone: from,
+        userText: text,
+        linqChatId,
+      });
     } else {
       await ctx.scheduler.runAfter(0, internal.process.handleQuestion, {
         userId,
