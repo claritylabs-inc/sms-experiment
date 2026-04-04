@@ -928,6 +928,27 @@ export const handleQuestion = internalAction({
         return;
       }
 
+      // /logs command — show recent message history + email activity
+      if (clean === "/logs" || clean === "logs") {
+        const [dbMessages, dbPendingAll] = await Promise.all([
+          ctx.runQuery(internal.messages.getRecentByUser, { userId: args.userId, limit: 15 }),
+          ctx.runQuery(internal.email.getPendingForUser, { userId: args.userId }),
+        ]);
+        const msgLines = dbMessages.map((m: any) => {
+          const dir = m.direction === "inbound" ? "→" : "←";
+          const ch = m.channel ? `[${m.channel}]` : "";
+          const ts = new Date(m.timestamp).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          const body = m.body.slice(0, 80) + (m.body.length > 80 ? "…" : "");
+          return `${ts} ${dir} ${ch} ${body}`;
+        });
+        const pendingLine = dbPendingAll
+          ? `\n📧 Pending: ${dbPendingAll.status} → ${dbPendingAll.recipientEmail} (${dbPendingAll.subject.slice(0, 40)})`
+          : "\n📧 No pending emails";
+        const logText = `📋 Recent Messages (${dbMessages.length})\n${msgLines.join("\n")}${pendingLine}`;
+        await sendAndLog(ctx, args.userId, args.phone, logText, args.linqChatId, args.imessageSender);
+        return;
+      }
+
       // Check for undo command (quick path — user might reply "undo" after email sent)
       if (clean === "undo" || clean === "/undo") {
         const pending = await ctx.runQuery(internal.email.getPendingForUser, {
