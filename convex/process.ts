@@ -799,7 +799,33 @@ export const handleEmailCollection = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    // Simple email validation
+    const clean = args.input.toLowerCase().trim();
+
+    // If user replies with a confirmation word (not an email), they might be confirming
+    // a prior email that Claude asked about. Check if we already have their email on file.
+    const confirmWords = ["yes", "yeah", "yep", "yup", "correct", "that's right", "ok", "okay", "sure"];
+    if (confirmWords.some(w => clean === w || clean === w + "!")) {
+      const existingUser = await ctx.runQuery(internal.users.get, { userId: args.userId });
+      if (existingUser?.email) {
+        // They already have an email — this was a confirmation, not a new email
+        // Check for pending email and resume flow
+        const pending = await ctx.runQuery(internal.email.getPendingForUser, { userId: args.userId });
+        if (pending) {
+          await ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "awaiting_email_confirm" });
+          await sendAndLog(ctx, args.userId, args.phone,
+            `Got it — using ${existingUser.email}. Ready to send to ${pending.recipientEmail}. Reply "send" to confirm.`,
+            args.linqChatId, args.imessageSender);
+        } else {
+          await ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" });
+          await sendAndLog(ctx, args.userId, args.phone,
+            `Your email is ${existingUser.email}. What can I help you with?`,
+            args.linqChatId, args.imessageSender);
+        }
+        return;
+      }
+    }
+
+    // Try to extract an email address
     const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
     const match = args.input.match(emailRegex);
 
@@ -808,7 +834,7 @@ export const handleEmailCollection = internalAction({
         ctx,
         args.userId,
         args.phone,
-        "That doesn't look like an email address — can you try again?",
+        "I need your email address so I can CC you on emails I send. What's your email?",
         args.linqChatId,
         args.imessageSender
       );
@@ -820,18 +846,45 @@ export const handleEmailCollection = internalAction({
       userId: args.userId,
       email,
     });
-    await ctx.runMutation(internal.users.updateState, {
+
+    // Check if there's a pending email that was waiting for the user's email to be set
+    const pending = await ctx.runQuery(internal.email.getPendingForUser, {
       userId: args.userId,
-      state: "active",
     });
-    await sendAndLog(
-      ctx,
-      args.userId,
-      args.phone,
-      `Got it — ${email}. Now what were you trying to do? I can send proof of insurance, coverage details, or a COI summary to someone`,
-      args.linqChatId,
-      args.imessageSender
-    );
+
+    if (pending && pending.status === "awaiting_confirmation") {
+      // Update the CC email on the pending email now that we have it
+      await ctx.runMutation(internal.email.updatePendingEmailStatus, {
+        pendingEmailId: pending._id,
+        status: "awaiting_confirmation", // keep same status, just update the CC
+      });
+      // Move to email confirm state
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "awaiting_email_confirm",
+      });
+      await sendAndLog(
+        ctx,
+        args.userId,
+        args.phone,
+        `Got it — ${email}. I have an email ready to send to ${pending.recipientEmail} (${pending.subject}). Want me to send it?`,
+        args.linqChatId,
+        args.imessageSender
+      );
+    } else {
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "active",
+      });
+      await sendAndLog(
+        ctx,
+        args.userId,
+        args.phone,
+        `Got it — ${email}. What can I help you with?`,
+        args.linqChatId,
+        args.imessageSender
+      );
+    }
   },
 });
 
@@ -1062,6 +1115,7 @@ When sending emails, ALWAYS ask for confirmation before sending unless the user 
       // Track tool side effects
       let pendingEmailCreated = false;
       let pendingEmailId: any = null;
+      let emailRequested = false;
 
       // Also include pending email context if there's one awaiting confirmation
       const pendingEmailCtx = await ctx.runQuery(internal.email.getPendingForUser, { userId: args.userId });
@@ -1248,21 +1302,15 @@ When sending emails, ALWAYS ask for confirmation before sending unless the user 
           }),
 
           request_email: tool({
-            description: "Ask the user for their email address. Use this when the user wants to send an email but doesn't have one on file.",
+            description: "Ask the user for their email address. Use this when the user wants to send an email but doesn't have one on file. The state will be set to awaiting_email after your response is sent.",
             inputSchema: z.object({
               reason: z.string().describe("Why the email is needed — shown to the user"),
             }),
             execute: async (_input) => {
-              try {
-                await ctx.runMutation(internal.users.updateState, {
-                  userId: args.userId,
-                  state: "awaiting_email",
-                });
-                return { success: true, message: "Ask the user for their email address now." };
-              } catch (err: any) {
-                console.error("request_email tool error:", err);
-                return { success: false, message: `Failed to request email: ${err.message || "unknown error"}` };
-              }
+              // Don't change state here — it will be set after generateText completes
+              // This prevents state change from happening mid-tool-use before Claude's text response is sent
+              emailRequested = true;
+              return { success: true, message: "Ask the user for their email address now. The system will handle the state change." };
             },
           }),
 
@@ -1332,8 +1380,14 @@ When sending emails, ALWAYS ask for confirmation before sending unless the user 
       // Get the final text response
       const replyText = result.text;
 
-      // If a pending email was created and needs confirmation, set user state
-      if (pendingEmailCreated && !user?.autoSendEmails) {
+      // Set state based on what tools were called
+      if (emailRequested) {
+        // Claude asked for the user's email — set state so next message routes to handleEmailCollection
+        await ctx.runMutation(internal.users.updateState, {
+          userId: args.userId,
+          state: "awaiting_email",
+        });
+      } else if (pendingEmailCreated && !user?.autoSendEmails) {
         await ctx.runMutation(internal.users.updateState, {
           userId: args.userId,
           state: "awaiting_email_confirm",
