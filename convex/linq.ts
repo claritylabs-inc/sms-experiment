@@ -161,15 +161,12 @@ export const webhook = httpAction(async (ctx, request) => {
     });
   } else if (state === "awaiting_insurance_slip") {
     if (hasAttachment) {
-      for (const attachment of mediaParts) {
-        await ctx.scheduler.runAfter(0, internal.process.processInsuranceSlip, {
-          userId,
-          mediaUrl: attachment.url || "",
-          mediaType: attachment.mime_type || "application/pdf",
-          phone,
-          linqChatId,
-        });
-      }
+      await ctx.scheduler.runAfter(0, internal.process.processInsuranceSlip, {
+        userId,
+        attachments: mediaParts.map((a) => ({ url: a.url || "", mimeType: a.mime_type || "application/pdf" })),
+        phone,
+        linqChatId,
+      });
     } else {
       await ctx.scheduler.runAfter(0, internal.process.handleInsuranceSlipResponse, {
         userId,
@@ -181,11 +178,19 @@ export const webhook = httpAction(async (ctx, request) => {
     }
   } else if (state === "awaiting_policy") {
     if (hasAttachment) {
-      for (const attachment of mediaParts) {
+      if (mediaParts.length > 1) {
+        await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
+          userId,
+          attachments: mediaParts.map((a) => ({ url: a.url || "", mimeType: a.mime_type || "application/pdf" })),
+          phone,
+          userText: text,
+          linqChatId,
+        });
+      } else {
         await ctx.scheduler.runAfter(0, internal.process.processMedia, {
           userId,
-          mediaUrl: attachment.url || "",
-          mediaType: attachment.mime_type || "application/pdf",
+          mediaUrl: mediaParts[0].url || "",
+          mediaType: mediaParts[0].mime_type || "application/pdf",
           phone,
           userText: text,
           linqChatId,
@@ -203,11 +208,19 @@ export const webhook = httpAction(async (ctx, request) => {
   } else {
     // active state (or any other)
     if (hasAttachment) {
-      for (const attachment of mediaParts) {
+      if (mediaParts.length > 1) {
+        await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
+          userId,
+          attachments: mediaParts.map((a) => ({ url: a.url || "", mimeType: a.mime_type || "application/pdf" })),
+          phone,
+          userText: text,
+          linqChatId,
+        });
+      } else {
         await ctx.scheduler.runAfter(0, internal.process.processMedia, {
           userId,
-          mediaUrl: attachment.url || "",
-          mediaType: attachment.mime_type || "application/pdf",
+          mediaUrl: mediaParts[0].url || "",
+          mediaType: mediaParts[0].mime_type || "application/pdf",
           phone,
           userText: text,
           linqChatId,

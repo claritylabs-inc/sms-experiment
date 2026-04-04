@@ -69,6 +69,56 @@ export function canEmbedInPdf(mimeType: string): boolean {
 }
 
 /**
+ * Merge multiple PDF buffers (or images converted to PDF) into a single PDF.
+ * Each input is { buffer: ArrayBuffer, mimeType: string }.
+ * PDFs are copied page-by-page; images are embedded as single pages.
+ * Returns base64-encoded merged PDF.
+ */
+export async function mergeIntoPdf(
+  files: Array<{ buffer: ArrayBuffer; mimeType: string }>
+): Promise<string> {
+  const merged = await PDFDocument.create();
+
+  for (const file of files) {
+    if (isImageMimeType(file.mimeType) && canEmbedInPdf(file.mimeType)) {
+      // Image → embed as a page
+      const bytes = new Uint8Array(file.buffer);
+      const isJpeg = file.mimeType.includes("jpeg") || file.mimeType.includes("jpg");
+      const image = isJpeg
+        ? await merged.embedJpg(bytes)
+        : await merged.embedPng(bytes);
+
+      const A4_WIDTH = 595;
+      const A4_HEIGHT = 842;
+      let pageWidth = image.width;
+      let pageHeight = image.height;
+      if (pageWidth > A4_WIDTH || pageHeight > A4_HEIGHT) {
+        const scale = Math.min(A4_WIDTH / pageWidth, A4_HEIGHT / pageHeight);
+        pageWidth *= scale;
+        pageHeight *= scale;
+      }
+      const page = merged.addPage([pageWidth, pageHeight]);
+      page.drawImage(image, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+    } else {
+      // PDF → copy all pages
+      try {
+        const source = await PDFDocument.load(file.buffer);
+        const indices = source.getPageIndices();
+        const copiedPages = await merged.copyPages(source, indices);
+        for (const page of copiedPages) {
+          merged.addPage(page);
+        }
+      } catch (err) {
+        console.error("Failed to merge a PDF document, skipping:", err);
+      }
+    }
+  }
+
+  const pdfBytes = await merged.save();
+  return Buffer.from(pdfBytes).toString("base64");
+}
+
+/**
  * Classify whether an image is a document photo or a contextual question.
  * Uses Claude Haiku via Vercel AI SDK for speed/cost.
  */

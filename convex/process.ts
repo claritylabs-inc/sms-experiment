@@ -20,6 +20,7 @@ import {
   canEmbedInPdf,
   embedImageInPdf,
   classifyMediaIntent,
+  mergeIntoPdf,
 } from "./imageUtils";
 import { generateCoiPdf, buildCoiInput } from "./coiGenerator";
 
@@ -513,6 +514,127 @@ export const processMedia = internalAction({
   },
 });
 
+// ── Multi-attachment handler — merges multiple docs into one PDF before extraction ──
+
+export const processMultipleMedia = internalAction({
+  args: {
+    userId: v.id("users"),
+    attachments: v.array(v.object({
+      url: v.string(),
+      mimeType: v.string(),
+    })),
+    phone: v.string(),
+    userText: v.optional(v.string()),
+    linqChatId: v.optional(v.string()),
+    imessageSender: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    try {
+      // Download all attachments in parallel
+      const downloads = await Promise.all(
+        args.attachments.map(async (att) => {
+          const resp = await fetch(att.url);
+          const buffer = await resp.arrayBuffer();
+          return { buffer, mimeType: att.mimeType };
+        })
+      );
+
+      // Check if any are non-document images (contextual photos) — if mixed with
+      // documents, treat everything as documents for merge
+      const allImages = downloads.every((d) => isImageMimeType(d.mimeType));
+
+      // If all are images and there's only one, use the single-image path
+      // (preserves vision Q&A classification logic)
+      if (allImages && downloads.length === 1) {
+        // Store image for vision context
+        const d = downloads[0];
+        const blob = new Blob([new Uint8Array(d.buffer)], { type: d.mimeType });
+        const storageId = await ctx.storage.store(blob);
+        await ctx.runMutation(internal.users.updateLastImageId, {
+          userId: args.userId,
+          lastImageId: storageId,
+        });
+
+        // Classify intent
+        const imageBase64 = Buffer.from(d.buffer).toString("base64");
+        const apiKey = process.env.ANTHROPIC_API_KEY || "";
+        const intent = await classifyMediaIntent(imageBase64, args.userText || "", apiKey, d.mimeType);
+
+        if (intent === "document" && canEmbedInPdf(d.mimeType)) {
+          const pdfBase64 = await embedImageInPdf(d.buffer, d.mimeType);
+          const pdfBlob = new Blob([Buffer.from(pdfBase64, "base64")], { type: "application/pdf" });
+          const pdfStorageId = await ctx.storage.store(pdfBlob);
+          await sendAndLog(ctx, args.userId, args.phone, "Got your photo — converting and reading through it now", args.linqChatId, args.imessageSender);
+          await processExtractionPipeline(ctx, {
+            userId: args.userId,
+            pdfBase64,
+            pdfStorageId,
+            phone: args.phone,
+            linqChatId: args.linqChatId,
+            imessageSender: args.imessageSender,
+          });
+        } else if (intent === "document" && !canEmbedInPdf(d.mimeType)) {
+          await sendAndLog(ctx, args.userId, args.phone,
+            "I can see that's an insurance document, but I need a clearer format to extract the details — can you send it as a PDF or take a screenshot?",
+            args.linqChatId, args.imessageSender);
+        } else {
+          const user = await ctx.runQuery(internal.users.get, { userId: args.userId });
+          await ctx.runAction(internal.process.handleQuestion, {
+            userId: args.userId,
+            question: args.userText || "What can you tell me about this image?",
+            phone: args.phone,
+            uploadToken: user?.uploadToken || "",
+            linqChatId: args.linqChatId,
+            imageStorageId: storageId,
+          });
+        }
+        return;
+      }
+
+      // Multiple files or single PDF — merge everything into one PDF
+      // Filter out non-embeddable images (HEIC/WebP) with a warning
+      const embeddable = downloads.filter((d) => {
+        if (isImageMimeType(d.mimeType) && !canEmbedInPdf(d.mimeType)) {
+          console.warn(`Skipping non-embeddable image type ${d.mimeType} in multi-doc merge`);
+          return false;
+        }
+        return true;
+      });
+
+      if (embeddable.length === 0) {
+        await sendAndLog(ctx, args.userId, args.phone,
+          "I couldn't process those files — try sending PDFs or JPEG/PNG photos instead",
+          args.linqChatId, args.imessageSender);
+        return;
+      }
+
+      await sendAndLog(ctx, args.userId, args.phone,
+        `Got ${embeddable.length} documents — merging and reading through them now`,
+        args.linqChatId, args.imessageSender);
+
+      const mergedPdfBase64 = await mergeIntoPdf(embeddable);
+
+      // Store merged PDF
+      const mergedBlob = new Blob([Buffer.from(mergedPdfBase64, "base64")], { type: "application/pdf" });
+      const mergedStorageId = await ctx.storage.store(mergedBlob);
+
+      await processExtractionPipeline(ctx, {
+        userId: args.userId,
+        pdfBase64: mergedPdfBase64,
+        pdfStorageId: mergedStorageId,
+        phone: args.phone,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+    } catch (error: any) {
+      console.error("Multi-media processing failed:", error);
+      await sendAndLog(ctx, args.userId, args.phone,
+        "Hmm I had trouble with those files — try sending them again, or one at a time",
+        args.linqChatId, args.imessageSender);
+    }
+  },
+});
+
 // ── Internal extraction pipeline (shared by processPolicy and processMedia) ──
 
 async function processExtractionPipeline(
@@ -764,8 +886,10 @@ export const handleInsuranceSlipResponse = internalAction({
 export const processInsuranceSlip = internalAction({
   args: {
     userId: v.id("users"),
-    mediaUrl: v.string(),
-    mediaType: v.string(),
+    attachments: v.array(v.object({
+      url: v.string(),
+      mimeType: v.string(),
+    })),
     phone: v.string(),
     linqChatId: v.optional(v.string()),
     imessageSender: v.optional(v.string()),
@@ -783,22 +907,48 @@ export const processInsuranceSlip = internalAction({
           userId: args.userId,
           state: "active",
         });
-        await ctx.runAction(internal.process.processMedia, {
-          userId: args.userId,
-          mediaUrl: args.mediaUrl,
-          mediaType: args.mediaType,
-          phone: args.phone,
-          linqChatId: args.linqChatId,
-          imessageSender: args.imessageSender,
-        });
+        if (args.attachments.length > 1) {
+          await ctx.runAction(internal.process.processMultipleMedia, {
+            userId: args.userId,
+            attachments: args.attachments,
+            phone: args.phone,
+            linqChatId: args.linqChatId,
+            imessageSender: args.imessageSender,
+          });
+        } else {
+          await ctx.runAction(internal.process.processMedia, {
+            userId: args.userId,
+            mediaUrl: args.attachments[0].url,
+            mediaType: args.attachments[0].mimeType,
+            phone: args.phone,
+            linqChatId: args.linqChatId,
+            imessageSender: args.imessageSender,
+          });
+        }
         return;
       }
 
-      // Download and store the slip
-      const downloadResponse = await fetch(args.mediaUrl);
-      const buffer = await downloadResponse.arrayBuffer();
-      const blob = new Blob([new Uint8Array(buffer)], { type: args.mediaType });
-      const storageId = await ctx.storage.store(blob);
+      // Download all attachments
+      const downloads = await Promise.all(
+        args.attachments.map(async (att) => {
+          const resp = await fetch(att.url);
+          const buffer = await resp.arrayBuffer();
+          return { buffer, mimeType: att.mimeType };
+        })
+      );
+
+      let storageId;
+      if (downloads.length === 1) {
+        // Single file — store directly
+        const d = downloads[0];
+        const blob = new Blob([new Uint8Array(d.buffer)], { type: d.mimeType });
+        storageId = await ctx.storage.store(blob);
+      } else {
+        // Multiple files — merge into one PDF
+        const mergedBase64 = await mergeIntoPdf(downloads);
+        const mergedBlob = new Blob([Buffer.from(mergedBase64, "base64")], { type: "application/pdf" });
+        storageId = await ctx.storage.store(mergedBlob);
+      }
 
       // Save the slip on the policy and transition to active
       await Promise.all([
