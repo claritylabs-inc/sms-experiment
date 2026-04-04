@@ -75,6 +75,59 @@ export const updateInsuranceSlip = internalMutation({
   },
 });
 
+export const updatePdfStorageId = internalMutation({
+  args: {
+    policyId: v.id("policies"),
+    pdfStorageId: v.id("_storage"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.policyId, { pdfStorageId: args.pdfStorageId });
+  },
+});
+
+export const remove = internalMutation({
+  args: { policyId: v.id("policies") },
+  handler: async (ctx, args) => {
+    await ctx.db.delete(args.policyId);
+  },
+});
+
+/** Find existing policies that could match a new upload (for merge detection). */
+export const findMatchingPolicy = internalQuery({
+  args: {
+    userId: v.id("users"),
+    carrier: v.optional(v.string()),
+    policyNumber: v.optional(v.string()),
+    category: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const policies = await ctx.db
+      .query("policies")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    // Find ready policies that match on carrier+policyNumber or carrier+category
+    return policies.find((p) => {
+      if (p.status !== "ready") return false;
+
+      // Strong match: same policy number
+      if (args.policyNumber && p.policyNumber &&
+          p.policyNumber.toLowerCase() === args.policyNumber.toLowerCase()) {
+        return true;
+      }
+
+      // Medium match: same carrier + same category (likely the same policy)
+      if (args.carrier && p.carrier &&
+          p.carrier.toLowerCase() === args.carrier.toLowerCase() &&
+          p.category === args.category) {
+        return true;
+      }
+
+      return false;
+    }) ?? null;
+  },
+});
+
 /** Get the most recent ready auto or homeowners policy for a user. */
 export const getLatestAutoOrHome = internalQuery({
   args: { userId: v.id("users") },

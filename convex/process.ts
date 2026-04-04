@@ -133,6 +133,28 @@ function buildPolicySummary(applied: any, category?: string): string {
   return summary;
 }
 
+/**
+ * Heuristic to detect if an extracted policy looks like a partial document
+ * (e.g., just a declarations page without full coverage details).
+ */
+function isPartialPolicy(applied: any): boolean {
+  const hasCoverages = applied.coverages && applied.coverages.length > 0;
+  const hasCarrier = !!applied.carrier;
+  const hasPolicyNumber = !!applied.policyNumber;
+  const hasDates = !!applied.effectiveDate && !!applied.expirationDate;
+  const hasPremium = !!applied.premium;
+
+  // If we have basic dec page info but no coverages, likely just a dec page
+  if ((hasCarrier || hasPolicyNumber) && hasDates && !hasCoverages) return true;
+
+  // If we have almost nothing extracted, it's a partial/stub
+  const fieldCount = [hasCarrier, hasPolicyNumber, hasDates, hasPremium, hasCoverages]
+    .filter(Boolean).length;
+  if (fieldCount <= 1) return true;
+
+  return false;
+}
+
 function parseCategoryInput(input: string): string | null {
   const clean = input.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
   if (!clean) return null;
@@ -701,8 +723,66 @@ async function processExtractionPipeline(
     ? ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }).catch(() => {})
     : Promise.resolve();
 
+  const isQuote = documentType === "quote";
+  const partial = isPartialPolicy(applied);
+
+  // Check for an existing policy this could be merged into
+  const existingMatch = !isQuote
+    ? await ctx.runQuery(internal.policies.findMatchingPolicy, {
+        userId: args.userId,
+        carrier: applied.carrier || undefined,
+        policyNumber: applied.policyNumber || undefined,
+        category: detectedCategory,
+      })
+    : null;
+
+  // If we found a match and this is a different document, offer to merge
+  if (existingMatch && existingMatch._id !== finalPolicyId) {
+    // Save the new policy record (so data isn't lost) but set up merge flow
+    await Promise.all([
+      ctx.runMutation(internal.policies.updateExtracted, {
+        policyId: finalPolicyId,
+        carrier: applied.carrier || undefined,
+        policyNumber: applied.policyNumber || undefined,
+        effectiveDate: applied.effectiveDate || undefined,
+        expirationDate: applied.expirationDate || undefined,
+        premium: applied.premium || undefined,
+        insuredName: applied.insuredName || undefined,
+        summary: applied.summary || undefined,
+        coverages: applied.coverages || undefined,
+        rawExtracted: applied,
+        category: detectedCategory,
+        policyTypes: applied.policyTypes || undefined,
+        status: "ready",
+      }),
+      ctx.runMutation(internal.users.setPendingMerge, {
+        userId: args.userId,
+        pendingMergePolicyId: existingMatch._id,
+        pendingMergeStorageId: args.pdfStorageId,
+      }),
+      ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "awaiting_merge_confirm",
+      }),
+      stopTypingIfLinq,
+    ]);
+
+    const summary = buildPolicySummary(applied, detectedCategory);
+    const matchLabel = existingMatch.carrier
+      ? `your ${existingMatch.carrier} ${CATEGORY_LABELS[existingMatch.category] || existingMatch.category} policy`
+      : `your existing ${CATEGORY_LABELS[existingMatch.category] || existingMatch.category} policy`;
+
+    await sendBurst(ctx, args.userId, args.phone, [
+      `Got it — here's what I found`,
+      summary,
+      `This looks like it goes with ${matchLabel}. Want me to merge them together? (yes/no)`,
+    ], args.linqChatId, args.imessageSender);
+    return;
+  }
+
+  // No merge — standard flow
   // For auto/home policies, transition to awaiting_insurance_slip instead of active
-  const isSlipEligible = !documentType.includes("quote") &&
+  const isSlipEligible = !isQuote &&
     (detectedCategory === "auto" || detectedCategory === "homeowners");
 
   await Promise.all([
@@ -729,21 +809,22 @@ async function processExtractionPipeline(
   ]);
 
   const summary = buildPolicySummary(applied, detectedCategory);
-  const isQuote = documentType === "quote";
 
-  if (isSlipEligible) {
-    await sendBurst(ctx, args.userId, args.phone, [
-      `Ok here's what you're covered for`,
-      summary,
-      "Do you have an existing insurance slip for this? If so, send it over and I'll save it. Otherwise just say no and I can generate one for you anytime.",
-    ], args.linqChatId, args.imessageSender);
+  // Build closing message based on what we detected
+  let closingMsg: string;
+  if (partial) {
+    closingMsg = "Looks like this might be just a declarations page or partial document. If you have the full policy, send it over and I'll combine them for a more complete picture.";
+  } else if (isSlipEligible) {
+    closingMsg = "Do you have an existing insurance slip for this? If so, send it over and I'll save it. Otherwise just say no and I can generate one for you anytime.";
   } else {
-    await sendBurst(ctx, args.userId, args.phone, [
-      `Ok here's what ${isQuote ? "that quote" : "you're covered for"}`,
-      summary,
-      "That's the main stuff — ask me anything about it, or I can send proof of insurance / set a reminder for you",
-    ], args.linqChatId, args.imessageSender);
+    closingMsg = "That's the main stuff — ask me anything about it, or I can send proof of insurance / set a reminder for you";
   }
+
+  await sendBurst(ctx, args.userId, args.phone, [
+    `Ok here's what ${isQuote ? "that quote" : "you're covered for"}`,
+    summary,
+    closingMsg,
+  ], args.linqChatId, args.imessageSender);
 }
 
 // ── Policy Processing (PDF path — unchanged but now delegates to shared pipeline) ──
@@ -989,6 +1070,206 @@ export const processInsuranceSlip = internalAction({
   },
 });
 
+// ── Policy Merge Confirmation Handler ──
+
+export const handleMergeConfirmation = internalAction({
+  args: {
+    userId: v.id("users"),
+    phone: v.string(),
+    input: v.string(),
+    linqChatId: v.optional(v.string()),
+    imessageSender: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const clean = args.input.toLowerCase().trim();
+    const user = await ctx.runQuery(internal.users.get, { userId: args.userId });
+
+    if (!user?.pendingMergePolicyId || !user?.pendingMergeStorageId) {
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "active",
+      });
+      await sendAndLog(ctx, args.userId, args.phone,
+        "No pending merge — what else can I help with?",
+        args.linqChatId, args.imessageSender);
+      return;
+    }
+
+    const confirmWords = ["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "merge", "combine", "go", "do it", "go ahead", "sounds good", "please"];
+    const denyWords = ["no", "nah", "nope", "keep separate", "separate", "don't", "dont", "cancel", "skip"];
+
+    if (confirmWords.some((w) => clean === w || clean.includes(w))) {
+      // Execute the merge
+      await ctx.runAction(internal.process.executePolicyMerge, {
+        userId: args.userId,
+        existingPolicyId: user.pendingMergePolicyId,
+        newStorageId: user.pendingMergeStorageId,
+        phone: args.phone,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+    } else if (denyWords.some((w) => clean === w || clean.includes(w))) {
+      // Keep as separate policy
+      await Promise.all([
+        ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
+        ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
+      ]);
+      await sendAndLog(ctx, args.userId, args.phone,
+        "Ok, kept them as separate policies. Ask me anything about either one!",
+        args.linqChatId, args.imessageSender);
+    } else {
+      // Unclear response — ask again
+      await sendAndLog(ctx, args.userId, args.phone,
+        "Just want to confirm — should I merge these documents into one policy? (yes/no)",
+        args.linqChatId, args.imessageSender);
+    }
+  },
+});
+
+/** Execute the actual PDF merge + re-extraction. */
+export const executePolicyMerge = internalAction({
+  args: {
+    userId: v.id("users"),
+    existingPolicyId: v.id("policies"),
+    newStorageId: v.id("_storage"),
+    phone: v.string(),
+    linqChatId: v.optional(v.string()),
+    imessageSender: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    try {
+      const existingPolicy = await ctx.runQuery(internal.policies.getById, {
+        policyId: args.existingPolicyId,
+      });
+
+      if (!existingPolicy) {
+        await Promise.all([
+          ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
+          ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
+        ]);
+        await sendAndLog(ctx, args.userId, args.phone,
+          "Hmm I couldn't find the original policy — keeping this as a new one. What else can I help with?",
+          args.linqChatId, args.imessageSender);
+        return;
+      }
+
+      await sendAndLog(ctx, args.userId, args.phone,
+        "Merging those documents now — one sec",
+        args.linqChatId, args.imessageSender);
+
+      // Download both PDFs
+      const [existingBlob, newBlob] = await Promise.all([
+        existingPolicy.pdfStorageId ? ctx.storage.get(existingPolicy.pdfStorageId) : null,
+        ctx.storage.get(args.newStorageId),
+      ]);
+
+      if (!newBlob) throw new Error("New document not found in storage");
+
+      let mergedBase64: string;
+
+      if (existingBlob) {
+        // Merge existing + new into one PDF
+        const [existingBuffer, newBuffer] = await Promise.all([
+          existingBlob.arrayBuffer(),
+          newBlob.arrayBuffer(),
+        ]);
+        mergedBase64 = await mergeIntoPdf([
+          { buffer: existingBuffer, mimeType: "application/pdf" },
+          { buffer: newBuffer, mimeType: "application/pdf" },
+        ]);
+      } else {
+        // No existing PDF — just use the new one
+        const newBuffer = await newBlob.arrayBuffer();
+        mergedBase64 = Buffer.from(newBuffer).toString("base64");
+      }
+
+      // Store merged PDF
+      const mergedBlob = new Blob([Buffer.from(mergedBase64, "base64")], { type: "application/pdf" });
+      const mergedStorageId = await ctx.storage.store(mergedBlob);
+
+      // Re-extract from the merged document
+      const [classifyResult, extractResult] = await Promise.all([
+        classifyDocumentType(mergedBase64),
+        extractFromPdf(mergedBase64, { concurrency: 3 }).catch(() => null),
+      ]);
+
+      let extracted: any;
+      let applied: any;
+
+      if (classifyResult.documentType === "quote") {
+        const quoteResult = extractResult || await extractQuoteFromPdf(mergedBase64, { concurrency: 3 });
+        extracted = quoteResult.extracted;
+        applied = sanitizeNulls(applyExtractedQuote(extracted));
+      } else {
+        if (extractResult) {
+          extracted = extractResult.extracted;
+          applied = sanitizeNulls(applyExtracted(extracted));
+        } else {
+          const result = await extractFromPdf(mergedBase64, { concurrency: 3 });
+          extracted = result.extracted;
+          applied = sanitizeNulls(applyExtracted(extracted));
+        }
+      }
+
+      const detectedCategory = detectCategory(applied);
+
+      // Update the existing policy with merged data, delete the duplicate
+      // Find the new policy record that was created during extraction
+      const userPolicies = await ctx.runQuery(internal.policies.getByUser, {
+        userId: args.userId,
+      });
+      const duplicatePolicy = userPolicies.find(
+        (p: any) => p._id !== args.existingPolicyId && p.pdfStorageId === args.newStorageId
+      );
+
+      await Promise.all([
+        ctx.runMutation(internal.policies.updateExtracted, {
+          policyId: args.existingPolicyId,
+          carrier: applied.carrier || undefined,
+          policyNumber: applied.policyNumber || undefined,
+          effectiveDate: applied.effectiveDate || undefined,
+          expirationDate: applied.expirationDate || undefined,
+          premium: applied.premium || undefined,
+          insuredName: applied.insuredName || undefined,
+          summary: applied.summary || undefined,
+          coverages: applied.coverages || undefined,
+          rawExtracted: applied,
+          category: detectedCategory,
+          policyTypes: applied.policyTypes || undefined,
+          status: "ready",
+        }),
+        // Update the storage ID to the merged PDF
+        ctx.runMutation(internal.policies.updatePdfStorageId, {
+          policyId: args.existingPolicyId,
+          pdfStorageId: mergedStorageId,
+        }),
+        // Clean up the duplicate policy if found
+        ...(duplicatePolicy
+          ? [ctx.runMutation(internal.policies.remove, { policyId: duplicatePolicy._id })]
+          : []),
+        ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
+        ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
+      ]);
+
+      const summary = buildPolicySummary(applied, detectedCategory);
+      await sendBurst(ctx, args.userId, args.phone, [
+        "Done — merged and re-read the combined document",
+        summary,
+        "Ask me anything about the updated info",
+      ], args.linqChatId, args.imessageSender);
+    } catch (error: any) {
+      console.error("Policy merge failed:", error);
+      await Promise.all([
+        ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
+        ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
+      ]);
+      await sendAndLog(ctx, args.userId, args.phone,
+        "I had trouble merging those — both documents are saved separately. What else can I help with?",
+        args.linqChatId, args.imessageSender);
+    }
+  },
+});
+
 // ── Email Confirmation / Undo State Handlers ──
 
 export const handleEmailConfirmation = internalAction({
@@ -1211,6 +1492,82 @@ export const handleQuestion = internalAction({
   handler: async (ctx, args) => {
     try {
       const clean = args.question.toLowerCase().trim();
+
+      // /merge command — scan all policies for merge candidates
+      if (clean === "/merge" || clean === "merge my policies") {
+        const allPolicies = await ctx.runQuery(internal.policies.getByUser, {
+          userId: args.userId,
+        });
+        const readyPolicies = allPolicies.filter((p: any) => p.status === "ready");
+
+        if (readyPolicies.length <= 1) {
+          await sendAndLog(ctx, args.userId, args.phone,
+            readyPolicies.length === 0
+              ? "You don't have any policies uploaded yet."
+              : "You only have one policy — nothing to merge.",
+            args.linqChatId, args.imessageSender);
+          return;
+        }
+
+        // Find merge candidates: group by carrier+policyNumber or carrier+category
+        const mergeCandidates: Array<{ a: any; b: any; reason: string }> = [];
+        for (let i = 0; i < readyPolicies.length; i++) {
+          for (let j = i + 1; j < readyPolicies.length; j++) {
+            const a = readyPolicies[i];
+            const b = readyPolicies[j];
+
+            // Same policy number
+            if (a.policyNumber && b.policyNumber &&
+                a.policyNumber.toLowerCase() === b.policyNumber.toLowerCase()) {
+              mergeCandidates.push({ a, b, reason: `same policy #${a.policyNumber}` });
+              continue;
+            }
+
+            // Same carrier + same category
+            if (a.carrier && b.carrier &&
+                a.carrier.toLowerCase() === b.carrier.toLowerCase() &&
+                a.category === b.category) {
+              mergeCandidates.push({ a, b, reason: `both ${a.carrier} ${CATEGORY_LABELS[a.category] || a.category}` });
+            }
+          }
+        }
+
+        if (mergeCandidates.length === 0) {
+          const policyList = readyPolicies.map((p: any, i: number) =>
+            `${i + 1}. ${p.carrier || "Unknown"} — ${CATEGORY_LABELS[p.category] || p.category}${p.policyNumber ? ` (#${p.policyNumber})` : ""}`
+          ).join("\n");
+          await sendBurst(ctx, args.userId, args.phone, [
+            `You have ${readyPolicies.length} policies:`,
+            policyList,
+            "They all look like separate policies — no merges needed.",
+          ], args.linqChatId, args.imessageSender);
+          return;
+        }
+
+        // Take the first merge candidate and prompt for it
+        const { a, b, reason } = mergeCandidates[0];
+        const keepPolicy = a.createdAt <= b.createdAt ? a : b; // keep older
+        const mergePolicy = a.createdAt <= b.createdAt ? b : a;
+
+        await Promise.all([
+          ctx.runMutation(internal.users.setPendingMerge, {
+            userId: args.userId,
+            pendingMergePolicyId: keepPolicy._id,
+            pendingMergeStorageId: mergePolicy.pdfStorageId!,
+          }),
+          ctx.runMutation(internal.users.updateState, {
+            userId: args.userId,
+            state: "awaiting_merge_confirm",
+          }),
+        ]);
+
+        await sendBurst(ctx, args.userId, args.phone, [
+          `Found ${mergeCandidates.length} potential merge${mergeCandidates.length > 1 ? "s" : ""}`,
+          `These two look like they belong together (${reason}):\n· ${keepPolicy.carrier || "Unknown"} — uploaded first\n· ${mergePolicy.carrier || "Unknown"} — uploaded later`,
+          "Want me to merge them into one? (yes/no)",
+        ], args.linqChatId, args.imessageSender);
+        return;
+      }
 
       // /debug command — dump current state for troubleshooting
       if (clean === "/debug" || clean === "debug") {

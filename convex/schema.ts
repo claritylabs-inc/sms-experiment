@@ -6,13 +6,15 @@ export default defineSchema({
     phone: v.string(),
     name: v.optional(v.string()),
     email: v.optional(v.string()),
-    state: v.optional(v.string()), // "awaiting_category" | "awaiting_policy" | "awaiting_email" | "awaiting_email_confirm" | "active"
+    state: v.optional(v.string()), // "awaiting_category" | "awaiting_policy" | "awaiting_email" | "awaiting_email_confirm" | "awaiting_insurance_slip" | "awaiting_merge_confirm" | "active"
     preferredCategory: v.optional(v.string()),
     uploadToken: v.optional(v.string()),
     linqChatId: v.optional(v.string()), // Linq chat ID for ongoing conversation
     imessageSender: v.optional(v.string()), // iMessage bridge sender (phone or email)
     lastImageId: v.optional(v.id("_storage")), // most recent image for contextual vision Q&A
     autoSendEmails: v.optional(v.boolean()), // skip confirmation for email actions
+    pendingMergePolicyId: v.optional(v.id("policies")), // existing policy to merge into
+    pendingMergeStorageId: v.optional(v.id("_storage")), // new PDF waiting to be merged
     lastActiveAt: v.number(),
     createdAt: v.number(),
   })

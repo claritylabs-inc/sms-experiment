@@ -128,6 +128,13 @@ export const webhook = httpAction(async (ctx, request) => {
         imessageSender,
       }
     );
+  } else if (state === "awaiting_merge_confirm") {
+    await ctx.scheduler.runAfter(0, internal.process.handleMergeConfirmation, {
+      userId,
+      phone,
+      input: text,
+      imessageSender,
+    });
   } else if (state === "awaiting_insurance_slip") {
     // Bridge doesn't support attachments yet — handle text only
     await ctx.scheduler.runAfter(0, internal.process.handleInsuranceSlipResponse, {

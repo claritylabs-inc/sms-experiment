@@ -24,7 +24,7 @@ A messaging-first insurance policy vault. Users text a phone number (via iMessag
 | Vision AI | Claude Haiku 4.5 (image classification) + Claude Sonnet 4.6 (image Q&A via AI SDK) |
 | Email | Resend API — transactional emails with 20s undo window |
 | Frontend | Next.js 15 + React 19 (upload page + redirect) |
-| PDF parsing | `pdf-lib` (also used for image→PDF conversion) |
+| PDF parsing | `pdf-lib` (image→PDF conversion, multi-doc PDF merging, COI generation) |
 
 ---
 
@@ -104,12 +104,14 @@ sms-experiment/
 | phone | string | E.164 phone number (indexed, unique identifier) |
 | name | string? | User-provided name |
 | email | string? | User's email address (for CC on outbound emails) |
-| state | string? | Conversation state: `"awaiting_category"`, `"awaiting_policy"`, `"awaiting_email"`, `"awaiting_email_confirm"`, `"active"` |
+| state | string? | Conversation state: `"awaiting_category"`, `"awaiting_policy"`, `"awaiting_email"`, `"awaiting_email_confirm"`, `"awaiting_insurance_slip"`, `"awaiting_merge_confirm"`, `"active"` |
 | preferredCategory | string? | `"auto"`, `"homeowners"`, `"renters"`, `"other"`, etc. |
 | uploadToken | string? | 24-char random token for the web upload page (indexed) |
 | linqChatId | string? | Linq chat ID for ongoing conversation (indexed by `by_linq_chat_id`) |
 | lastImageId | Id\<"_storage"\>? | Most recent image sent by user, for vision Q&A context |
 | autoSendEmails | boolean? | If true, skip email confirmation and send immediately (no undo timer) |
+| pendingMergePolicyId | Id\<"policies"\>? | Existing policy to merge into (during merge confirmation flow) |
+| pendingMergeStorageId | Id\<"_storage"\>? | New PDF waiting to be merged (during merge confirmation flow) |
 | lastActiveAt | number | Last message timestamp |
 | createdAt | number | Signup timestamp |
 
@@ -129,7 +131,8 @@ sms-experiment/
 | summary | string? | AI-generated plain-English summary |
 | coverages | any? | Array of coverage objects from CL SDK |
 | rawExtracted | any? | Full CL SDK extraction output |
-| pdfStorageId | Id\<"_storage"\>? | Convex file storage reference for the raw PDF |
+| pdfStorageId | Id\<"_storage"\>? | Convex file storage reference for the raw PDF (may be merged multi-doc PDF) |
+| insuranceSlipStorageId | Id\<"_storage"\>? | Existing insurance slip uploaded by user (auto/home only) |
 | status | `"processing"` \| `"ready"` \| `"failed"` | Extraction pipeline status |
 | createdAt | number | Timestamp |
 
@@ -247,6 +250,53 @@ sms-experiment/
 2. `crons.ts` runs `reminderActions.checkAndSendReminders` every hour
 3. When triggerDate is reached, texts user via their channel about the upcoming expiration
 
+### Flow 9: Insurance Slip Upload (`state: "awaiting_insurance_slip"`)
+1. After uploading an auto or homeowners policy, Spot asks if they have an existing insurance slip
+2. User can:
+   - **Send a file** (PDF/image, single or multiple) → saved as `insuranceSlipStorageId` on the policy
+   - **Say yes** (no attachment) → prompted to send the file
+   - **Say no/skip** → transitions to active, told Spot can generate one anytime
+   - **Say something else** → transitions to active, routed to Q&A
+3. Multiple slip attachments are merged into one PDF via `pdf-lib` before storage
+
+### Flow 10: Multi-Document Upload (multiple attachments in one message)
+1. User sends multiple files (PDFs, images, or mix) in a single message
+2. `processMultipleMedia` downloads all attachments in parallel
+3. Files are merged into a single PDF using `pdf-lib` (`mergeIntoPdf` in `imageUtils.ts`)
+   - PDFs: pages are copied via `copyPages`
+   - Images (JPEG/PNG): embedded as individual pages
+   - HEIC/WebP: skipped with warning
+4. Merged PDF is stored and processed through the standard extraction pipeline → single policy record
+5. Useful for split policies (e.g., declarations page + coverage doc sent together)
+
+### Flow 11: Partial Policy Detection
+1. After extraction, `isPartialPolicy()` heuristic checks for incomplete data:
+   - Has carrier/policy number + dates but no coverages → likely just a declarations page
+   - Only 1 or fewer key fields extracted → stub/partial document
+2. If partial: Spot tells user "Looks like this might be just a declarations page" and asks for the full policy
+3. User can send the rest later — merge detection (Flow 12) will match it automatically
+
+### Flow 12: Intelligent Policy Merging (`state: "awaiting_merge_confirm"`)
+1. After extraction, `findMatchingPolicy` checks if the new document matches an existing policy:
+   - **Strong match:** same policy number (case-insensitive)
+   - **Medium match:** same carrier + same category
+2. If match found, Spot asks: "This looks like it goes with [existing policy]. Want me to merge them? (yes/no)"
+3. User state → `awaiting_merge_confirm`, pending merge info stored on user record
+4. On **confirm**: `executePolicyMerge` runs:
+   - Downloads both PDFs from storage
+   - Merges into one PDF via `mergeIntoPdf`
+   - Re-extracts from the combined document (full pipeline)
+   - Updates existing policy record, deletes the duplicate
+5. On **deny**: keeps both as separate policies
+6. On **unclear response**: re-asks for confirmation
+
+### Flow 13: `/merge` Cleanup Command
+1. User texts `/merge` while in active state
+2. Spot scans all ready policies for merge candidates (same policyNumber or same carrier+category)
+3. If candidates found: presents the first match and asks for merge confirmation
+4. Enters `awaiting_merge_confirm` flow (same as Flow 12)
+5. If no candidates: lists all policies and confirms they're all separate
+
 ### Nudge Flow (text message while `"awaiting_policy"`)
 - Recognizes retry intent ("try again", "retry", "resend") and re-prompts for PDF/photo
 - Checks if it's a category change
@@ -340,6 +390,8 @@ This deletes the user, all their messages, and all their policies.
    - `awaiting_policy` → expects PDF/photo attachment or sends upload link
    - `awaiting_email` → expects email address input
    - `awaiting_email_confirm` → expects send/cancel/undo for pending email
+   - `awaiting_insurance_slip` → expects insurance slip upload or skip (auto/home only)
+   - `awaiting_merge_confirm` → expects yes/no for merging duplicate policies
    - `active` → handles Q&A with tool_use, also accepts new policy uploads
 
 10. **Compliance guardrails in system prompt** — Spot doesn't sell, recommend, or give legal/financial advice. Keeps responses to policy explanation only.
@@ -353,6 +405,14 @@ This deletes the user, all their messages, and all their policies.
 14. **Email confirmation with undo** — Emails require user confirmation before sending (reply "send" or "cancel"). Once confirmed, emails are scheduled with a 20s undo window via `ctx.scheduler.runAfter(20_000, ...)`. The scheduled function checks status before sending — if the user replies "undo" within 20s, the scheduled function ID is cancelled. Auto-send mode (`/autosend on`) skips both confirmation and undo timer.
 
 15. **Convex node/non-node split** — Mutations and queries go in regular files. Actions requiring Node.js APIs (`process.env`, `fetch` for external APIs) go in `"use node"` files. This is why email/reminder logic is split: `email.ts` (mutations/queries/templates) + `emailActions.ts` (Resend API action), `reminders.ts` (CRUD) + `reminderActions.ts` (send action).
+
+16. **Insurance slip upload flow** — After auto/home policy extraction, Spot asks users if they have an existing insurance slip. Users can send it (stored as `insuranceSlipStorageId` on the policy) instead of having Spot generate a custom COI. Supports multiple attachments merged into one.
+
+17. **Multi-document merging via pdf-lib** — `mergeIntoPdf()` in `imageUtils.ts` combines multiple PDFs and images into a single PDF. PDFs are merged via `copyPages`, images are embedded as pages. Used for multi-attachment uploads and policy merge operations.
+
+18. **Partial policy detection** — `isPartialPolicy()` heuristic detects incomplete extractions (e.g., just a declarations page). Checks for missing coverages, minimal field counts. Prompts user to send the full policy document.
+
+19. **Intelligent policy merge with confirmation** — After extraction, `findMatchingPolicy` checks for existing policies with the same carrier/policy number or carrier/category. If matched, enters `awaiting_merge_confirm` state. On confirmation, PDFs are merged, re-extracted, and the duplicate record is removed. `/merge` command provides manual cleanup.
 
 ---
 

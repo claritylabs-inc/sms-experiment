@@ -113,6 +113,30 @@ export const setAutoSendEmails = internalMutation({
   },
 });
 
+export const setPendingMerge = internalMutation({
+  args: {
+    userId: v.id("users"),
+    pendingMergePolicyId: v.id("policies"),
+    pendingMergeStorageId: v.id("_storage"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, {
+      pendingMergePolicyId: args.pendingMergePolicyId,
+      pendingMergeStorageId: args.pendingMergeStorageId,
+    });
+  },
+});
+
+export const clearPendingMerge = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, {
+      pendingMergePolicyId: undefined,
+      pendingMergeStorageId: undefined,
+    });
+  },
+});
+
 // Public — upload page calls this to get a storage upload URL
 export const generateUploadUrl = mutation({
   handler: async (ctx) => {

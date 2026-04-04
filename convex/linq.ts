@@ -159,6 +159,13 @@ export const webhook = httpAction(async (ctx, request) => {
       input: text,
       linqChatId,
     });
+  } else if (state === "awaiting_merge_confirm") {
+    await ctx.scheduler.runAfter(0, internal.process.handleMergeConfirmation, {
+      userId,
+      phone,
+      input: text,
+      linqChatId,
+    });
   } else if (state === "awaiting_insurance_slip") {
     if (hasAttachment) {
       await ctx.scheduler.runAfter(0, internal.process.processInsuranceSlip, {
