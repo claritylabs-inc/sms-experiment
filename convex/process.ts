@@ -1021,7 +1021,12 @@ Actions you can take:
 - Send the user their upload link if they want to add another policy
 - If the user doesn't have an email on file and they want to send an email, use the request_email tool first
 
-When sending emails, ALWAYS ask for confirmation before sending unless the user explicitly says to just send it. Keep the confirmation message brief — just say who it's going to and what it contains.
+CRITICAL email rules:
+- When an email tool returns "awaitingConfirmation", the email has NOT been sent yet. It is DRAFTED and waiting for the user to confirm.
+- You MUST tell the user to reply "send" to confirm. Do NOT say "Sent!" or "Done!" or imply the email was sent.
+- Your message should be like: "I've drafted a [type] email to [recipient]. Reply 'send' to confirm or 'cancel' to stop."
+- Only say "Sent!" if the tool returns "autoSent: true" (meaning auto-send is enabled).
+- If the tool returns "no_email", ask the user for their email address naturally.
 `;
 
       // Build document context
@@ -1227,9 +1232,10 @@ When sending emails, ALWAYS ask for confirmation before sending unless the user 
                 return {
                   success: true,
                   awaitingConfirmation: true,
+                  emailNotSentYet: true,
                   recipientEmail: input.recipientEmail,
                   subject: emailContent.subject,
-                  message: `Email drafted to ${input.recipientEmail}. Ask the user to confirm.`,
+                  message: `EMAIL NOT SENT YET. Drafted to ${input.recipientEmail}. You MUST ask the user to reply "send" to confirm. Do NOT say the email was sent.`,
                 };
               } catch (err: any) {
                 console.error("send_email tool error:", err);
@@ -1286,8 +1292,9 @@ When sending emails, ALWAYS ask for confirmation before sending unless the user 
                 return {
                   success: true,
                   awaitingConfirmation: true,
+                  emailNotSentYet: true,
                   recipientEmail: input.recipientEmail,
-                  message: `COI email drafted for ${input.recipientName} at ${input.recipientEmail}. Ask user to confirm.`,
+                  message: `EMAIL NOT SENT YET. COI drafted for ${input.recipientName} at ${input.recipientEmail}. You MUST ask the user to reply "send" to confirm. Do NOT say the email was sent.`,
                 };
               } catch (err: any) {
                 console.error("generate_coi tool error:", err);
