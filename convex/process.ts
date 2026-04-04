@@ -764,19 +764,19 @@ export const handleEmailConfirmation = internalAction({
         ctx,
         args.userId,
         args.phone,
-        `Sending to ${pending.recipientEmail} now. Reply "undo" in the next 20s to cancel`,
+        `Sent! ${pending.recipientName || pending.recipientEmail} should have it shortly`,
         args.linqChatId,
         args.imessageSender
       );
       return;
     }
 
-    // Unrecognized — re-prompt
+    // Unrecognized — don't re-prompt robotically, just nudge naturally
     await sendAndLog(
       ctx,
       args.userId,
       args.phone,
-      `Reply "send" to confirm, "cancel" to stop, or "undo" after sending to recall`,
+      `Just checking — should I send that email to ${pending.recipientEmail}?`,
       args.linqChatId,
       args.imessageSender
     );
@@ -1018,10 +1018,12 @@ Actions you can take:
 
 CRITICAL email rules:
 - When an email tool returns "awaitingConfirmation", the email has NOT been sent yet. It is DRAFTED and waiting for the user to confirm.
-- You MUST tell the user to reply "send" to confirm. Do NOT say "Sent!" or "Done!" or imply the email was sent.
-- Your message should be like: "I've drafted a [type] email to [recipient]. Reply 'send' to confirm or 'cancel' to stop."
+- Ask naturally — like "I'll send a COI to [name] at [email] for your [policy type] policy. Good to go?" or "Sending proof of insurance to [name]. Sound right?"
+- Do NOT say "Sent!", "Done!", or imply the email was already sent.
+- Do NOT mention commands like "reply send" or "reply cancel" — just ask if they want you to send it. The system handles the rest.
 - Only say "Sent!" if the tool returns "autoSent: true" (meaning auto-send is enabled).
 - If the tool returns "no_email", ask the user for their email address naturally.
+- ONE confirmation is enough. Don't re-ask if they already said yes or confirmed.
 `;
 
       // Build document context
