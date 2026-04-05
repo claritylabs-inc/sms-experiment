@@ -1095,10 +1095,10 @@ export const handleMergeConfirmation = internalAction({
       return;
     }
 
-    const confirmWords = ["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "merge", "combine", "go", "do it", "go ahead", "sounds good", "please"];
-    const denyWords = ["no", "nah", "nope", "keep separate", "separate", "don't", "dont", "cancel", "skip"];
+    const confirmExact = ["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "merge", "combine", "go", "do it", "go ahead", "sounds good", "please", "y"];
+    const denyExact = ["no", "nah", "nope", "keep separate", "separate", "don't", "dont", "cancel", "skip", "n"];
 
-    if (confirmWords.some((w) => clean === w || clean.includes(w))) {
+    if (confirmExact.some((w) => clean === w)) {
       // Execute the merge
       await ctx.runAction(internal.process.executePolicyMerge, {
         userId: args.userId,
@@ -1108,7 +1108,7 @@ export const handleMergeConfirmation = internalAction({
         linqChatId: args.linqChatId,
         imessageSender: args.imessageSender,
       });
-    } else if (denyWords.some((w) => clean === w || clean.includes(w))) {
+    } else if (denyExact.some((w) => clean === w)) {
       // Keep as separate policy
       await Promise.all([
         ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
@@ -1142,11 +1142,13 @@ export const executePolicyMerge = internalAction({
         policyId: args.existingPolicyId,
       });
 
+      // Transition to active immediately so new messages during merge aren't re-routed here
+      await Promise.all([
+        ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
+        ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
+      ]);
+
       if (!existingPolicy) {
-        await Promise.all([
-          ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
-          ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
-        ]);
         await sendAndLog(ctx, args.userId, args.phone,
           "Hmm I couldn't find the original policy — keeping this as a new one. What else can I help with?",
           args.linqChatId, args.imessageSender);
@@ -1247,22 +1249,18 @@ export const executePolicyMerge = internalAction({
         ...(duplicatePolicy
           ? [ctx.runMutation(internal.policies.remove, { policyId: duplicatePolicy._id })]
           : []),
-        ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
-        ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
       ]);
 
       const summary = buildPolicySummary(applied, detectedCategory);
+      const label = friendlyCategoryLabel(detectedCategory, applied.policyTypes);
       await sendBurst(ctx, args.userId, args.phone, [
-        "Done — merged and re-read the combined document",
+        `Done — merged your ${label} documents and re-read the combined policy`,
         summary,
-        "Ask me anything about the updated info",
+        "Ask me anything about your coverage, or type /merge to check for more duplicates",
       ], args.linqChatId, args.imessageSender);
     } catch (error: any) {
       console.error("Policy merge failed:", error);
-      await Promise.all([
-        ctx.runMutation(internal.users.clearPendingMerge, { userId: args.userId }),
-        ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" }),
-      ]);
+      // State already set to active at start — just notify
       await sendAndLog(ctx, args.userId, args.phone,
         "I had trouble merging those — both documents are saved separately. What else can I help with?",
         args.linqChatId, args.imessageSender);
