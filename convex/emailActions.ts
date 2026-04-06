@@ -2,8 +2,7 @@
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { generateText } from "ai";
-import { getModel } from "./models";
+import { getModel, generateTextWithFallback } from "./models";
 import {
   buildAgentSystemPrompt,
   buildDocumentContext,
@@ -202,7 +201,7 @@ Rules:
 - Include only relevant policy details for the purpose.
 - Do NOT include the subject line in the body.`;
 
-    const { text } = await generateText({
+    const { text } = await generateTextWithFallback({
       model: getModel("email_generate"),
       prompt,
       maxOutputTokens: 500,
@@ -318,7 +317,7 @@ Powered by Clarity Labs
 
 Respond with ONLY the JSON object.`;
 
-    const { text: aiResponse } = await generateText({
+    const { text: aiResponse } = await generateTextWithFallback({
       model: getModel("email_reply"),
       system: systemPrompt,
       prompt: `Email from ${senderName}:\n\n${replyText}`,

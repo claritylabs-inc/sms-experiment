@@ -120,6 +120,69 @@ export function getModel(task: ModelTask) {
 }
 
 /**
+ * The fallback model — Claude Sonnet. Used when primary provider fails at runtime.
+ */
+function fallbackModel() {
+  return anthropic()("claude-sonnet-4-6");
+}
+
+/**
+ * generateText with automatic fallback.
+ *
+ * Tries the primary model first. If it fails (provider outage, rate limit,
+ * timeout, bad response), retries once with Claude Sonnet.
+ *
+ * Usage — drop-in replacement for AI SDK's generateText:
+ *   import { generateTextWithFallback } from "./models";
+ *   const result = await generateTextWithFallback({ model: getModel("qa"), ... });
+ */
+export async function generateTextWithFallback(
+  options: Parameters<typeof import("ai").generateText>[0]
+): Promise<Awaited<ReturnType<typeof import("ai").generateText>>> {
+  const { generateText } = await import("ai");
+  try {
+    return await generateText(options);
+  } catch (err: any) {
+    const modelId = (options.model as any)?.modelId || "unknown";
+    const isFallbackAlready = modelId.includes("claude-sonnet");
+    if (isFallbackAlready) {
+      // Already on fallback — don't retry, just throw
+      throw err;
+    }
+    console.warn(
+      `Primary model (${modelId}) failed: ${err.message || err}. Retrying with Claude Sonnet fallback.`
+    );
+    return await generateText({
+      ...options,
+      model: fallbackModel(),
+    });
+  }
+}
+
+/**
+ * generateObject with automatic fallback. Same pattern as generateTextWithFallback.
+ */
+export async function generateObjectWithFallback(
+  options: any
+): Promise<any> {
+  const { generateObject } = await import("ai");
+  try {
+    return await generateObject(options);
+  } catch (err: any) {
+    const modelId = (options.model as any)?.modelId || "unknown";
+    const isFallbackAlready = modelId.includes("claude-sonnet");
+    if (isFallbackAlready) throw err;
+    console.warn(
+      `Primary model (${modelId}) failed for generateObject: ${err.message || err}. Retrying with Claude Sonnet.`
+    );
+    return await generateObject({
+      ...options,
+      model: fallbackModel(),
+    });
+  }
+}
+
+/**
  * Check which providers are available based on env vars.
  */
 export function availableProviders(): string[] {

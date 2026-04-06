@@ -12,8 +12,8 @@ import {
   buildDocumentContext,
   sanitizeNulls,
 } from "@claritylabs/cl-sdk";
-import { generateText, tool, stepCountIs } from "ai";
-import { getModel } from "./models";
+import { tool, stepCountIs } from "ai";
+import { getModel, generateTextWithFallback } from "./models";
 import { z } from "zod";
 import {
   isImageMimeType,
@@ -596,7 +596,7 @@ export const processMultipleMedia = internalAction({
 
 async function isApplicationForm(pdfBase64: string): Promise<boolean> {
   try {
-    const result = await generateText({
+    const result = await generateTextWithFallback({
       model: getModel("extraction_classify"),
       system: "You classify insurance documents. Respond with ONLY 'application' or 'not_application'. An insurance application is a form to be filled out to APPLY for insurance coverage (e.g. ACORD forms, carrier-specific application forms with blank fields to fill in). A policy, quote, declaration page, or certificate is NOT an application.",
       prompt: `Classify this PDF (first 20KB of base64): ${pdfBase64.slice(0, 20000)}`,
@@ -1634,7 +1634,7 @@ export const handleAppQuestions = internalAction({
       const batchStart = currentBatch * BATCH_SIZE;
       const currentBatchFields = unanswered.slice(batchStart, batchStart + BATCH_SIZE);
 
-      const result = await generateText({
+      const result = await generateTextWithFallback({
         model: getModel("qa"),
         system: `You are helping fill an insurance application. The user is responding to questions or correcting pre-filled answers.
 
@@ -2291,7 +2291,7 @@ Proactive awareness:
         ? `\n\nPOLICY HEALTH CHECK FINDINGS:\n${analysisContext}`
         : "";
 
-      const result = await generateText({
+      const result = await generateTextWithFallback({
         model: getModel("qa"),
         system: `${complianceGuardrails}\n\n${sdkPrompt}\n\nHere are the user's insurance documents:\n${documentContext}\n\nUser's email on file: ${user?.email || "none"}\nUser's name: ${user?.name || "Unknown"}${memoryBlock}${analysisNote}${pendingEmailNote}${contactsNote}${appNote}`,
         messages: aiMessages,

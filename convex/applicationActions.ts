@@ -2,8 +2,7 @@
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { generateText, generateObject } from "ai";
-import { getModel } from "./models";
+import { getModel, generateTextWithFallback, generateObjectWithFallback } from "./models";
 import { z } from "zod";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -61,7 +60,7 @@ export const extractApplicationFields = internalAction({
       });
 
       // Step 1: Extract all questions/fields from the application
-      const { object: extraction } = await generateObject({
+      const { object: extraction } = await generateObjectWithFallback({
         model: getModel("qa"),
         schema: z.object({
           applicationTitle: z.string().describe("Title of the application form (e.g. 'ACORD 125 - Commercial Insurance Application')"),
@@ -96,7 +95,7 @@ The PDF content (base64): ${pdfBase64.slice(0, 100000)}`,
       let answers: Record<string, { value: string; source: string; policyId?: string }> = {};
 
       if (readyPolicies.length > 0) {
-        const { object: autoFilled } = await generateObject({
+        const { object: autoFilled } = await generateObjectWithFallback({
           model: getModel("qa"),
           schema: z.object({
             answers: z.array(z.object({
@@ -137,10 +136,10 @@ Do NOT guess or make up information. Only use data directly from the policies.`,
 
       // Calculate batches for unanswered required fields
       const unansweredRequired = extraction.fields.filter(
-        (f) => f.required && !answers[f.id]
+        (f: any) => f.required && !answers[f.id]
       );
       const unansweredOptional = extraction.fields.filter(
-        (f) => !f.required && !answers[f.id]
+        (f: any) => !f.required && !answers[f.id]
       );
       const unanswered = [...unansweredRequired, ...unansweredOptional];
       const totalBatches = Math.ceil(unanswered.length / QUESTIONS_PER_BATCH);

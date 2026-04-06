@@ -2,8 +2,7 @@
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { generateText } from "ai";
-import { getModel } from "./models";
+import { getModel, generateTextWithFallback } from "./models";
 import { sendAndLog, sendBurst } from "./sendHelpers";
 import { buildMemoryContext } from "./memory";
 
@@ -131,7 +130,7 @@ Output ONLY a JSON object (no markdown fences):
 
 Be honest and practical. Don't alarm — inform. If the policy is solid, say so.`;
 
-      const { text } = await generateText({
+      const { text } = await generateTextWithFallback({
         model: getModel("health_check"),
         system: systemPrompt,
         prompt: JSON.stringify(raw),
@@ -276,7 +275,7 @@ Output ONLY a JSON object:
 
 Be practical and concise. If the portfolio is solid, say so.`;
 
-      const { text } = await generateText({
+      const { text } = await generateTextWithFallback({
         model: getModel("portfolio_analysis"),
         system: systemPrompt,
         prompt: JSON.stringify(policySummaries),
@@ -365,7 +364,7 @@ Output ONLY a JSON object:
   "naturalSummary": "2-3 sentence texting-style renewal summary. Lead with the premium change, then the most important coverage change."
 }`;
 
-      const { text } = await generateText({
+      const { text } = await generateTextWithFallback({
         model: getModel("renewal_comparison"),
         system: systemPrompt,
         prompt: JSON.stringify({

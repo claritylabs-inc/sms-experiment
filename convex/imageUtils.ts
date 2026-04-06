@@ -1,8 +1,7 @@
 "use node";
 
 import { PDFDocument } from "pdf-lib";
-import { generateText } from "ai";
-import { getModel } from "./models";
+import { getModel, generateTextWithFallback } from "./models";
 
 const IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -131,7 +130,7 @@ export async function classifyMediaIntent(
   const mediaMime = mimeType.includes("png") ? "image/png" as const : "image/jpeg" as const;
 
   try {
-    const { text } = await generateText({
+    const { text } = await generateTextWithFallback({
       model: getModel("image_classify"),
       system: "You are classifying an image sent to an insurance assistant. Respond with ONLY 'document' or 'question'. 'document' = photo of an insurance document, policy page, declarations page, insurance card, or any official insurance paperwork. 'question' = everything else (screenshots, photos of damage, general images the user wants to discuss).",
       messages: [
