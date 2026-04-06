@@ -2,7 +2,7 @@
 
 import { PDFDocument } from "pdf-lib";
 import { generateText } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { getModel } from "./models";
 
 const IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -131,9 +131,8 @@ export async function classifyMediaIntent(
   const mediaMime = mimeType.includes("png") ? "image/png" as const : "image/jpeg" as const;
 
   try {
-    const anthropic = createAnthropic();
     const { text } = await generateText({
-      model: anthropic("claude-haiku-4-5-20251001"),
+      model: getModel("image_classify"),
       system: "You are classifying an image sent to an insurance assistant. Respond with ONLY 'document' or 'question'. 'document' = photo of an insurance document, policy page, declarations page, insurance card, or any official insurance paperwork. 'question' = everything else (screenshots, photos of damage, general images the user wants to discuss).",
       messages: [
         {

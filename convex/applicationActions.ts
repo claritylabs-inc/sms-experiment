@@ -3,7 +3,7 @@ import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { generateText, generateObject } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { getModel } from "./models";
 import { z } from "zod";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -60,11 +60,9 @@ export const extractApplicationFields = internalAction({
         };
       });
 
-      const anthropic = createAnthropic();
-
       // Step 1: Extract all questions/fields from the application
       const { object: extraction } = await generateObject({
-        model: anthropic("claude-sonnet-4-6"),
+        model: getModel("qa"),
         schema: z.object({
           applicationTitle: z.string().describe("Title of the application form (e.g. 'ACORD 125 - Commercial Insurance Application')"),
           carrier: z.string().optional().describe("Target carrier/insurer if mentioned"),
@@ -99,7 +97,7 @@ The PDF content (base64): ${pdfBase64.slice(0, 100000)}`,
 
       if (readyPolicies.length > 0) {
         const { object: autoFilled } = await generateObject({
-          model: anthropic("claude-sonnet-4-6"),
+          model: getModel("qa"),
           schema: z.object({
             answers: z.array(z.object({
               fieldId: z.string(),

@@ -13,7 +13,7 @@ import {
   sanitizeNulls,
 } from "@claritylabs/cl-sdk";
 import { generateText, tool, stepCountIs } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { getModel } from "./models";
 import { z } from "zod";
 import {
   isImageMimeType,
@@ -596,9 +596,8 @@ export const processMultipleMedia = internalAction({
 
 async function isApplicationForm(pdfBase64: string): Promise<boolean> {
   try {
-    const anthropic = createAnthropic();
     const result = await generateText({
-      model: anthropic("claude-haiku-4-5-20251001"),
+      model: getModel("extraction_classify"),
       system: "You classify insurance documents. Respond with ONLY 'application' or 'not_application'. An insurance application is a form to be filled out to APPLY for insurance coverage (e.g. ACORD forms, carrier-specific application forms with blank fields to fill in). A policy, quote, declaration page, or certificate is NOT an application.",
       prompt: `Classify this PDF (first 20KB of base64): ${pdfBase64.slice(0, 20000)}`,
       maxOutputTokens: 10,
@@ -1625,7 +1624,6 @@ export const handleAppQuestions = internalAction({
     // If user sent a correction for pre-filled data (e.g. "name should be John Doe")
     if (parsedAnswers.length === 0 && !isConfirm) {
       // Use Claude to interpret the correction
-      const anthropic = createAnthropic();
       const currentAnswersSummary = Object.entries(answers)
         .map(([fieldId, ans]) => {
           const field = fields.find((f) => f.id === fieldId);
@@ -1637,7 +1635,7 @@ export const handleAppQuestions = internalAction({
       const currentBatchFields = unanswered.slice(batchStart, batchStart + BATCH_SIZE);
 
       const result = await generateText({
-        model: anthropic("claude-sonnet-4-6"),
+        model: getModel("qa"),
         system: `You are helping fill an insurance application. The user is responding to questions or correcting pre-filled answers.
 
 Current fields and answers:
@@ -2257,8 +2255,6 @@ Proactive awareness:
       aiMessages.push({ role: "user", content: userContent });
 
       // Define tools
-      const anthropic = createAnthropic();
-
       // Track tool side effects
       let pendingEmailCreated = false;
       let pendingEmailId: any = null;
@@ -2296,7 +2292,7 @@ Proactive awareness:
         : "";
 
       const result = await generateText({
-        model: anthropic("claude-sonnet-4-6"),
+        model: getModel("qa"),
         system: `${complianceGuardrails}\n\n${sdkPrompt}\n\nHere are the user's insurance documents:\n${documentContext}\n\nUser's email on file: ${user?.email || "none"}\nUser's name: ${user?.name || "Unknown"}${memoryBlock}${analysisNote}${pendingEmailNote}${contactsNote}${appNote}`,
         messages: aiMessages,
         maxOutputTokens,

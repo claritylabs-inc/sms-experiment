@@ -3,7 +3,7 @@ import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { generateText } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { getModel } from "./models";
 import {
   buildAgentSystemPrompt,
   buildDocumentContext,
@@ -152,7 +152,6 @@ export const generateEmailBody = internalAction({
     coverageNames: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
-    const anthropic = createAnthropic();
     const raw = args.policyData;
 
     // Build a rich context from rawExtracted data
@@ -204,7 +203,7 @@ Rules:
 - Do NOT include the subject line in the body.`;
 
     const { text } = await generateText({
-      model: anthropic("claude-sonnet-4-6"),
+      model: getModel("email_generate"),
       prompt,
       maxOutputTokens: 500,
     });
@@ -319,9 +318,8 @@ Powered by Clarity Labs
 
 Respond with ONLY the JSON object.`;
 
-    const anthropic = createAnthropic();
     const { text: aiResponse } = await generateText({
-      model: anthropic("claude-sonnet-4-6"),
+      model: getModel("email_reply"),
       system: systemPrompt,
       prompt: `Email from ${senderName}:\n\n${replyText}`,
       maxOutputTokens: 600,
