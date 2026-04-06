@@ -17,6 +17,7 @@ export default defineSchema({
     pendingMergeStorageId: v.optional(v.id("_storage")), // new PDF waiting to be merged
     activeApplicationId: v.optional(v.id("applications")), // currently active application being filled
     autoFillApplications: v.optional(v.boolean()), // skip confirmation for application filling (/autofill on)
+    portfolioAnalysis: v.optional(v.any()), // { overlaps[], gaps[], suggestions[], naturalSummary, generatedAt }
     lastActiveAt: v.number(),
     createdAt: v.number(),
   })
@@ -41,6 +42,7 @@ export default defineSchema({
     rawExtracted: v.optional(v.any()),
     pdfStorageId: v.optional(v.id("_storage")),
     insuranceSlipStorageId: v.optional(v.id("_storage")), // existing insurance slip (auto/home) uploaded by user
+    analysis: v.optional(v.any()), // health check: { strengths[], gaps[], exclusionHighlights[], lowLimits[], naturalSummary, generatedAt }
     status: v.union(
       v.literal("processing"),
       v.literal("ready"),
@@ -136,6 +138,34 @@ export default defineSchema({
     carrier: v.optional(v.string()),
     createdAt: v.number(),
   }).index("by_user", ["userId"]),
+
+  // Per-user agent memory — persistent context that grows over time
+  userMemory: defineTable({
+    userId: v.id("users"),
+    type: v.string(), // "fact" | "preference" | "risk_note" | "event" | "interaction"
+    content: v.string(),
+    source: v.string(), // "policy_extraction" | "analysis" | "conversation" | "email" | "system"
+    policyId: v.optional(v.id("policies")),
+    expiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_type", ["userId", "type"]),
+
+  // Proactive alerts — tracks what was sent to avoid duplicates
+  proactiveAlerts: defineTable({
+    userId: v.id("users"),
+    alertType: v.string(), // "health_check" | "portfolio" | "renewal_comparison" | "seasonal" | "milestone" | "expiration_nudge"
+    policyId: v.optional(v.id("policies")),
+    relatedPolicyId: v.optional(v.id("policies")),
+    summary: v.string(),
+    metadata: v.optional(v.any()),
+    status: v.string(), // "sent" | "suppressed"
+    createdAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_type_user", ["alertType", "userId"]),
 
   // Dedup lock table — prevents duplicate webhook processing
   webhookLocks: defineTable({

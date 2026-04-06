@@ -151,6 +151,16 @@ export const setAutoFillApplications = internalMutation({
   },
 });
 
+export const updatePortfolioAnalysis = internalMutation({
+  args: {
+    userId: v.id("users"),
+    portfolioAnalysis: v.any(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, { portfolioAnalysis: args.portfolioAnalysis });
+  },
+});
+
 export const clearPendingMerge = internalMutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {

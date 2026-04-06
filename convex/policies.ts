@@ -63,6 +63,16 @@ export const updateExtracted = internalMutation({
   },
 });
 
+export const updateAnalysis = internalMutation({
+  args: {
+    policyId: v.id("policies"),
+    analysis: v.any(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.policyId, { analysis: args.analysis });
+  },
+});
+
 export const updateInsuranceSlip = internalMutation({
   args: {
     policyId: v.id("policies"),

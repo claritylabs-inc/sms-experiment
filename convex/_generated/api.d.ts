@@ -9,7 +9,10 @@
  */
 
 import type * as admin from "../admin.js";
+import type * as applicationActions from "../applicationActions.js";
+import type * as applications from "../applications.js";
 import type * as coiGenerator from "../coiGenerator.js";
+import type * as contacts from "../contacts.js";
 import type * as crons from "../crons.js";
 import type * as email from "../email.js";
 import type * as emailActions from "../emailActions.js";
@@ -19,14 +22,19 @@ import type * as imageUtils from "../imageUtils.js";
 import type * as imessageBridge from "../imessageBridge.js";
 import type * as ingest from "../ingest.js";
 import type * as linq from "../linq.js";
+import type * as memory from "../memory.js";
 import type * as messages from "../messages.js";
 import type * as openphone from "../openphone.js";
 import type * as policies from "../policies.js";
+import type * as proactive from "../proactive.js";
+import type * as proactiveAlertActions from "../proactiveAlertActions.js";
+import type * as proactiveAlerts from "../proactiveAlerts.js";
 import type * as process from "../process.js";
 import type * as reminderActions from "../reminderActions.js";
 import type * as reminders from "../reminders.js";
 import type * as send from "../send.js";
 import type * as sendBridge from "../sendBridge.js";
+import type * as sendHelpers from "../sendHelpers.js";
 import type * as sendLinq from "../sendLinq.js";
 import type * as upload from "../upload.js";
 import type * as users from "../users.js";
@@ -39,7 +47,10 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   admin: typeof admin;
+  applicationActions: typeof applicationActions;
+  applications: typeof applications;
   coiGenerator: typeof coiGenerator;
+  contacts: typeof contacts;
   crons: typeof crons;
   email: typeof email;
   emailActions: typeof emailActions;
@@ -49,14 +60,19 @@ declare const fullApi: ApiFromModules<{
   imessageBridge: typeof imessageBridge;
   ingest: typeof ingest;
   linq: typeof linq;
+  memory: typeof memory;
   messages: typeof messages;
   openphone: typeof openphone;
   policies: typeof policies;
+  proactive: typeof proactive;
+  proactiveAlertActions: typeof proactiveAlertActions;
+  proactiveAlerts: typeof proactiveAlerts;
   process: typeof process;
   reminderActions: typeof reminderActions;
   reminders: typeof reminders;
   send: typeof send;
   sendBridge: typeof sendBridge;
+  sendHelpers: typeof sendHelpers;
   sendLinq: typeof sendLinq;
   upload: typeof upload;
   users: typeof users;

@@ -23,6 +23,8 @@ import {
   mergeIntoPdf,
 } from "./imageUtils";
 import { generateCoiPdf, buildCoiInput } from "./coiGenerator";
+import { sendAndLog, sendBurst, sleep, getUploadLink } from "./sendHelpers";
+import { buildMemoryContext } from "./memory";
 
 // ── Helpers ──
 
@@ -177,74 +179,7 @@ function parseCategoryInput(input: string): string | null {
   return null;
 }
 
-// Channel-aware send: tries Linq first, then iMessage bridge, falls back to OpenPhone
-async function sendAndLog(
-  ctx: any,
-  userId: any,
-  phone: string,
-  body: string,
-  linqChatId?: string,
-  imessageSender?: string
-) {
-  let usedChannel = "openphone";
-
-  if (linqChatId) {
-    try {
-      await ctx.runAction(internal.sendLinq.sendLinqMessage, {
-        chatId: linqChatId,
-        body,
-      });
-      usedChannel = "linq";
-    } catch (err) {
-      console.error("Linq send failed, falling back to OpenPhone:", err);
-      await ctx.runAction(internal.send.sendSms, { to: phone, body });
-    }
-  } else if (imessageSender) {
-    try {
-      await ctx.runAction(internal.sendBridge.sendBridgeMessage, {
-        to: imessageSender,
-        body,
-      });
-      usedChannel = "imessage_bridge";
-    } catch (err) {
-      console.error("iMessage bridge failed, falling back to OpenPhone:", err);
-      await ctx.runAction(internal.send.sendSms, { to: phone, body });
-    }
-  } else {
-    await ctx.runAction(internal.send.sendSms, { to: phone, body });
-  }
-
-  await ctx.runMutation(internal.messages.log, {
-    userId,
-    direction: "outbound" as const,
-    body,
-    hasAttachment: false,
-    channel: usedChannel,
-  });
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function sendBurst(
-  ctx: any,
-  userId: any,
-  phone: string,
-  messages: string[],
-  linqChatId?: string,
-  imessageSender?: string
-) {
-  for (let i = 0; i < messages.length; i++) {
-    if (i > 0) await sleep(800 + Math.random() * 700); // 0.8–1.5s pause
-    await sendAndLog(ctx, userId, phone, messages[i], linqChatId, imessageSender);
-  }
-}
-
-function getUploadLink(uploadToken: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://secure.claritylabs.inc";
-  return `${baseUrl}/upload/${uploadToken}`;
-}
+// sendAndLog, sendBurst, sleep, getUploadLink imported from ./sendHelpers
 
 // ── Journey ──
 
@@ -860,6 +795,17 @@ async function processExtractionPipeline(
     summary,
     closingMsg,
   ], args.linqChatId, args.imessageSender);
+
+  // Schedule proactive health check analysis (2s delay so summary texts arrive first)
+  if (!isQuote && !partial) {
+    ctx.scheduler.runAfter(2000, internal.proactive.analyzePolicy, {
+      policyId: finalPolicyId,
+      userId: args.userId,
+      phone: args.phone,
+      linqChatId: args.linqChatId,
+      imessageSender: args.imessageSender,
+    });
+  }
 }
 
 // ── Policy Processing (PDF path — unchanged but now delegates to shared pipeline) ──
@@ -2124,10 +2070,11 @@ export const handleQuestion = internalAction({
         }
       }
 
-      const [policies, user, recentMessages] = await Promise.all([
+      const [policies, user, recentMessages, userMemories] = await Promise.all([
         ctx.runQuery(internal.policies.getByUser, { userId: args.userId }),
         ctx.runQuery(internal.users.get, { userId: args.userId }),
         ctx.runQuery(internal.messages.getRecentByUser, { userId: args.userId, limit: 20 }),
+        ctx.runQuery(internal.memory.getForUser, { userId: args.userId }),
       ]);
 
       const readyPolicies = policies.filter((p: any) => p.status === "ready");
@@ -2192,6 +2139,12 @@ CRITICAL email rules:
 - Only say "Sent!" if the tool returns "autoSent: true" (meaning auto-send is enabled).
 - If the tool returns "no_email", ask the user for their email address naturally.
 - ONE confirmation is enough. Don't re-ask if they already said yes or confirmed.
+
+Proactive awareness:
+- When answering scenario questions ("Am I covered if..."), ALWAYS check the policy exclusions. If a relevant exclusion exists, mention it naturally: "Your policy does cover X, but heads up — there's an exclusion for Y."
+- If you notice something in the user's question that relates to a known risk note or gap from the health check findings, mention it naturally.
+- If the user mentions a personal detail worth remembering (moving, buying something expensive, changing jobs), use the save_memory tool to record it for future reference.
+- Don't be pushy about gaps — mention them once when relevant, not repeatedly.
 `;
 
       // Build document context
@@ -2330,9 +2283,21 @@ CRITICAL email rules:
         ? `\n\nCOMPLETED APPLICATION: The user has a filled "${readyApp.applicationTitle || "insurance application"}" ready to send. If they ask to send/email the application, use the send_application tool.`
         : "";
 
+      // Build memory context — persistent knowledge about this person
+      const memoryBlock = buildMemoryContext(userMemories);
+
+      // Include policy analysis context (health check findings)
+      const analysisContext = readyPolicies
+        .filter((p: any) => p.analysis?.naturalSummary)
+        .map((p: any) => `${p.carrier || p.category}: ${p.analysis.naturalSummary}`)
+        .join("\n");
+      const analysisNote = analysisContext
+        ? `\n\nPOLICY HEALTH CHECK FINDINGS:\n${analysisContext}`
+        : "";
+
       const result = await generateText({
         model: anthropic("claude-sonnet-4-6"),
-        system: `${complianceGuardrails}\n\n${sdkPrompt}\n\nHere are the user's insurance documents:\n${documentContext}\n\nUser's email on file: ${user?.email || "none"}\nUser's name: ${user?.name || "Unknown"}${pendingEmailNote}${contactsNote}${appNote}`,
+        system: `${complianceGuardrails}\n\n${sdkPrompt}\n\nHere are the user's insurance documents:\n${documentContext}\n\nUser's email on file: ${user?.email || "none"}\nUser's name: ${user?.name || "Unknown"}${memoryBlock}${analysisNote}${pendingEmailNote}${contactsNote}${appNote}`,
         messages: aiMessages,
         maxOutputTokens,
         tools: {
@@ -2674,6 +2639,27 @@ CRITICAL email rules:
               } catch (err: any) {
                 console.error("reextract_policy tool error:", err);
                 return { success: false, message: `Failed to re-extract: ${err.message || "unknown error"}` };
+              }
+            },
+          }),
+
+          save_memory: tool({
+            description: "Save a fact, preference, or life event about the user that you learned during conversation. Use this when you learn something about the user that would be useful to remember for future interactions — like they're moving, have expensive jewelry, prefer short messages, etc.",
+            inputSchema: z.object({
+              type: z.enum(["fact", "preference", "event"]).describe("Type of memory: fact (personal detail), preference (how they like to interact), event (life event like moving, buying a car)"),
+              content: z.string().describe("The memory to save — clear and concise"),
+            }),
+            execute: async (input) => {
+              try {
+                await ctx.runMutation(internal.memory.addMemory, {
+                  userId: args.userId,
+                  type: input.type,
+                  content: input.content,
+                  source: "conversation",
+                });
+                return { success: true, message: "Memory saved." };
+              } catch (err: any) {
+                return { success: false, message: `Failed to save: ${err.message}` };
               }
             },
           }),
