@@ -2521,15 +2521,25 @@ Proactive awareness:
           }),
 
           send_upload_link: tool({
-            description: "Send the user their upload link so they can add another policy",
+            description: "Send the user their upload link so they can add another policy. The link is sent as a separate message. On iMessage, users can also just send the PDF or photo directly in the conversation.",
             inputSchema: z.object({}),
             execute: async () => {
               try {
                 const link = getUploadLink(args.uploadToken);
-                return { success: true, link, message: `Upload link: ${link}` };
+                const isIm = !!(args.linqChatId || args.imessageSender);
+                if (isIm) {
+                  await sendAndLog(ctx, args.userId, args.phone,
+                    `Here's your upload link:\n${link}\n\nOr you can just send me the PDF or photo right here in the chat`,
+                    args.linqChatId, args.imessageSender);
+                } else {
+                  await sendAndLog(ctx, args.userId, args.phone,
+                    `Here's your upload link:\n${link}`,
+                    args.linqChatId, args.imessageSender);
+                }
+                return { success: true, message: "Upload link sent to the user. Don't repeat the link in your response — just acknowledge it was sent." };
               } catch (err: any) {
                 console.error("send_upload_link tool error:", err);
-                return { success: false, message: `Failed to generate upload link: ${err.message || "unknown error"}` };
+                return { success: false, message: `Failed to send upload link: ${err.message || "unknown error"}` };
               }
             },
           }),
