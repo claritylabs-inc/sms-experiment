@@ -2,13 +2,13 @@
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { getModel, generateTextWithFallback, generateObjectWithFallback } from "./models";
-import { z } from "zod";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-
-// ── Constants ──
-
-const QUESTIONS_PER_BATCH = 5;
+import {
+  fillAcroForm,
+  getAcroFormFields,
+  sanitizeNulls,
+} from "@claritylabs/cl-sdk";
+import { PDFDocument } from "pdf-lib";
+import { getAppPipeline } from "./sdkAdapter";
 
 // ── Extract questions from an application PDF ──
 
@@ -22,161 +22,53 @@ export const extractApplicationFields = internalAction({
   },
   handler: async (ctx, args) => {
     try {
-      // Get the application record
       const app = await ctx.runQuery(internal.applications.getById, {
         applicationId: args.applicationId,
       });
       if (!app) throw new Error("Application not found");
 
-      // Download the PDF
       const blob = await ctx.storage.get(app.pdfStorageId);
       if (!blob) throw new Error("PDF not found in storage");
       const buffer = await blob.arrayBuffer();
       const pdfBase64 = Buffer.from(buffer).toString("base64");
 
-      // Load user's existing policies for context
-      const policies = await ctx.runQuery(internal.policies.getByUser, {
-        userId: args.userId,
-      });
-      const readyPolicies = policies.filter((p: any) => p.status === "ready");
-
-      // Build policy context for auto-filling
-      const policyContext = readyPolicies.map((p: any) => {
-        const raw = p.rawExtracted || {};
-        return {
-          category: p.category,
-          carrier: raw.carrier || p.carrier,
-          policyNumber: raw.policyNumber || p.policyNumber,
-          insuredName: raw.insuredName || p.insuredName,
-          insuredAddress: raw.insuredAddress,
-          effectiveDate: raw.effectiveDate || p.effectiveDate,
-          expirationDate: raw.expirationDate || p.expirationDate,
-          premium: raw.premium || p.premium,
-          coverages: raw.coverages || p.coverages,
-          policyTypes: raw.policyTypes || p.policyTypes,
-          broker: raw.broker || raw.brokerAgency,
-          carrierLegalName: raw.security || raw.carrierLegalName,
-        };
+      // Use SDK application pipeline with full Convex-backed stores
+      const pipeline = getAppPipeline(ctx, args.userId);
+      const { state } = await pipeline.processApplication({
+        pdfBase64,
+        applicationId: args.applicationId as string,
       });
 
-      // Step 1: Extract all questions/fields from the application
-      const { object: extraction } = await generateObjectWithFallback({
-        model: getModel("qa"),
-        schema: z.object({
-          applicationTitle: z.string().describe("Title of the application form (e.g. 'ACORD 125 - Commercial Insurance Application')"),
-          carrier: z.string().optional().describe("Target carrier/insurer if mentioned"),
-          fields: z.array(z.object({
-            id: z.string().describe("Unique field identifier like 'insured_name', 'effective_date', 'business_type' etc"),
-            question: z.string().describe("The question or field label as it appears on the form"),
-            section: z.string().optional().describe("Section of the form this belongs to"),
-            type: z.enum(["text", "date", "number", "boolean", "choice"]),
-            choices: z.array(z.string()).optional().describe("Available choices for choice-type fields"),
-            required: z.boolean(),
-          })),
-        }),
-        prompt: `You are analyzing an insurance application PDF. Extract ALL fillable fields and questions from this document.
-
-For each field, provide:
-- A unique camelCase id
-- The exact question/label text
-- The section it belongs to
-- The field type (text, date, number, boolean for yes/no, choice for multiple choice)
-- Whether it's required
-
-Be thorough — capture every field that needs to be filled in, including checkboxes, date fields, name fields, address fields, etc.
-
-Group related fields logically (e.g., all address fields together, all coverage fields together).
-
-The PDF content (base64): ${pdfBase64.slice(0, 100000)}`,
-        maxOutputTokens: 4096,
-      });
-
-      // Step 2: Auto-fill from existing policies
-      let answers: Record<string, { value: string; source: string; policyId?: string }> = {};
-
-      if (readyPolicies.length > 0) {
-        const { object: autoFilled } = await generateObjectWithFallback({
-          model: getModel("qa"),
-          schema: z.object({
-            answers: z.array(z.object({
-              fieldId: z.string(),
-              value: z.string(),
-              policyId: z.string().optional().describe("ID of the policy this was pulled from"),
-              confidence: z.enum(["high", "medium", "low"]),
-            })),
-          }),
-          prompt: `You have these insurance application fields to fill:
-
-${JSON.stringify(extraction.fields, null, 2)}
-
-And here is data from the user's existing insurance policies:
-
-${JSON.stringify(policyContext, null, 2)}
-
-For each field where you can find a matching answer from the policy data, provide the answer.
-Only fill fields where you have HIGH or MEDIUM confidence the data matches.
-For dates, use MM/DD/YYYY format.
-For boolean fields, use "Yes" or "No".
-For names/addresses, use exactly what appears in the policy data.
-
-Do NOT guess or make up information. Only use data directly from the policies.`,
-          maxOutputTokens: 4096,
-        });
-
-        for (const a of autoFilled.answers) {
-          if (a.confidence !== "low") {
-            answers[a.fieldId] = {
-              value: a.value,
-              source: "policy",
-              policyId: a.policyId,
-            };
-          }
-        }
-      }
-
-      // Calculate batches for unanswered required fields
-      const unansweredRequired = extraction.fields.filter(
-        (f: any) => f.required && !answers[f.id]
-      );
-      const unansweredOptional = extraction.fields.filter(
-        (f: any) => !f.required && !answers[f.id]
-      );
-      const unanswered = [...unansweredRequired, ...unansweredOptional];
-      const totalBatches = Math.ceil(unanswered.length / QUESTIONS_PER_BATCH);
-
-      // Update the application record
-      await ctx.runMutation(internal.applications.updateFields, {
+      // Save SDK state to Convex
+      await ctx.runMutation(internal.applications.saveState, {
         applicationId: args.applicationId,
-        fields: extraction.fields,
-        answers,
-        applicationTitle: extraction.applicationTitle,
-        carrier: extraction.carrier,
-        totalBatches: Math.max(totalBatches, 0),
-        status: Object.keys(answers).length > 0 ? "answering" : "answering",
+        fields: sanitizeNulls(state.fields),
+        batches: state.batches,
+        currentBatchIndex: state.currentBatchIndex,
+        title: state.title,
+        applicationType: state.applicationType ?? undefined,
+        status: state.status === "complete" ? "ready" : state.status,
       });
 
       // Build summary message
-      const totalFields = extraction.fields.length;
-      const autoFilledCount = Object.keys(answers).length;
-      const remainingCount = unanswered.length;
+      const totalFields = state.fields.length;
+      const autoFilledCount = state.fields.filter((f) => f.value).length;
+      const remainingCount = totalFields - autoFilledCount;
 
       const messages: string[] = [
-        `Got it — this is a ${extraction.applicationTitle || "insurance application"}${extraction.carrier ? ` for ${extraction.carrier}` : ""}`,
-        `Found ${totalFields} fields to fill${autoFilledCount > 0 ? `. I was able to pre-fill ${autoFilledCount} from your existing ${readyPolicies.length === 1 ? "policy" : "policies"}` : ""}`,
+        `Got it — this is a ${state.title || "insurance application"}`,
+        `Found ${totalFields} fields to fill${autoFilledCount > 0 ? `. I was able to pre-fill ${autoFilledCount} from your existing policies` : ""}`,
       ];
 
       if (autoFilledCount > 0) {
-        // Show pre-filled answers for confirmation
-        const preFilledSummary = Object.entries(answers)
+        const preFilledSummary = state.fields
+          .filter((f) => f.value)
           .slice(0, 8)
-          .map(([fieldId, ans]) => {
-            const field = extraction.fields.find((f: any) => f.id === fieldId);
-            return `· ${field?.question || fieldId}: ${ans.value}`;
-          })
+          .map((f) => `· ${f.label}: ${f.value}`)
           .join("\n");
 
         messages.push(
-          `Here's what I pre-filled:\n${preFilledSummary}${Object.keys(answers).length > 8 ? `\n...and ${Object.keys(answers).length - 8} more` : ""}`
+          `Here's what I pre-filled:\n${preFilledSummary}${autoFilledCount > 8 ? `\n...and ${autoFilledCount - 8} more` : ""}`
         );
         messages.push(
           remainingCount > 0
@@ -189,19 +81,15 @@ Do NOT guess or make up information. Only use data directly from the policies.`,
         );
       }
 
-      // Set user state
       await ctx.runMutation(internal.users.updateState, {
         userId: args.userId,
         state: "awaiting_app_questions",
       });
-
-      // Store the active application ID on the user
       await ctx.runMutation(internal.users.setActiveApplication, {
         userId: args.userId,
         activeApplicationId: args.applicationId,
       });
 
-      // Send messages
       for (let i = 0; i < messages.length; i++) {
         if (i > 0) await new Promise((r) => setTimeout(r, 800 + Math.random() * 700));
         await sendAndLog(ctx, args.userId, args.phone, messages[i], args.linqChatId, args.imessageSender);
@@ -253,7 +141,6 @@ export const fillApplicationPdf = internalAction({
         args.linqChatId, args.imessageSender
       );
 
-      // Start typing for Linq users
       if (args.linqChatId) {
         try {
           await ctx.runAction(internal.sendLinq.startTyping, { chatId: args.linqChatId });
@@ -262,154 +149,65 @@ export const fillApplicationPdf = internalAction({
 
       const fields = (app.fields || []) as Array<{
         id: string;
-        question: string;
+        label: string;
         section?: string;
-        type: string;
+        fieldType?: string;
+        value?: string;
       }>;
-      const answers = (app.answers || {}) as Record<string, { value: string; source: string }>;
 
-      // Build a filled form summary for the PDF
-      const filledData: Array<{ question: string; answer: string; section?: string }> = [];
-      for (const field of fields) {
-        const ans = answers[field.id];
-        if (ans) {
-          filledData.push({
-            question: field.question,
-            answer: ans.value,
-            section: field.section,
-          });
-        }
-      }
+      // Get the original PDF to check for AcroForm fields
+      const pdfBlob = await ctx.storage.get(app.pdfStorageId);
+      let filledPdfBase64: string | null = null;
 
-      // Generate a filled application PDF
-      const pdfDoc = await PDFDocument.create();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-      const fontSize = 10;
-      const lineHeight = 14;
-      const margin = 50;
+      if (pdfBlob) {
+        const pdfBuffer = await pdfBlob.arrayBuffer();
+        const originalPdfBase64 = Buffer.from(pdfBuffer).toString("base64");
 
-      let page = pdfDoc.addPage([612, 792]); // Letter size
-      let y = 742;
+        try {
+          // Try AcroForm filling first (native PDF fields)
+          const pdfBytes = Buffer.from(originalPdfBase64, "base64");
+          const pdfDoc = await PDFDocument.load(pdfBytes);
+          const acroFields = getAcroFormFields(pdfDoc);
 
-      // Title
-      page.drawText(app.applicationTitle || "Insurance Application", {
-        x: margin,
-        y,
-        size: 16,
-        font: boldFont,
-        color: rgb(0.067, 0.094, 0.153),
-      });
-      y -= 24;
-
-      if (app.carrier) {
-        page.drawText(`Carrier: ${app.carrier}`, {
-          x: margin,
-          y,
-          size: 11,
-          font,
-          color: rgb(0.4, 0.4, 0.4),
-        });
-        y -= 20;
-      }
-
-      page.drawText(`Generated by Spot on ${new Date().toLocaleDateString("en-US")}`, {
-        x: margin,
-        y,
-        size: 9,
-        font,
-        color: rgb(0.54, 0.53, 0.47),
-      });
-      y -= 24;
-
-      // Draw a line
-      page.drawLine({
-        start: { x: margin, y },
-        end: { x: 562, y },
-        thickness: 0.5,
-        color: rgb(0.8, 0.8, 0.8),
-      });
-      y -= 16;
-
-      let currentSection = "";
-
-      for (const item of filledData) {
-        // New section header
-        if (item.section && item.section !== currentSection) {
-          currentSection = item.section;
-          if (y < margin + 40) {
-            page = pdfDoc.addPage([612, 792]);
-            y = 742;
+          if (acroFields.length > 0) {
+            const fieldMappings = fields
+              .filter((f) => f.value)
+              .map((f) => ({
+                acroFormName: f.id,
+                value: f.value!,
+              }));
+            const filledBytes = await fillAcroForm(new Uint8Array(pdfBytes), fieldMappings);
+            filledPdfBase64 = Buffer.from(filledBytes).toString("base64");
           }
-          y -= 8;
-          page.drawText(currentSection.toUpperCase(), {
-            x: margin,
-            y,
-            size: 11,
-            font: boldFont,
-            color: rgb(0.067, 0.094, 0.153),
-          });
-          y -= lineHeight + 4;
+        } catch (e) {
+          console.log("AcroForm filling failed, falling back to overlay:", e);
         }
 
-        // Check if we need a new page
-        if (y < margin + 20) {
-          page = pdfDoc.addPage([612, 792]);
-          y = 742;
-        }
+        // If AcroForm didn't work, use text overlay
+        if (!filledPdfBase64) {
+          const filledData = fields
+            .filter((f) => f.value)
+            .map((f) => ({
+              page: 0,
+              text: `${f.label}: ${f.value}`,
+              x: 10,
+              y: 10,
+              fontSize: 10,
+            }));
 
-        // Question
-        page.drawText(item.question + ":", {
-          x: margin,
-          y,
-          size: fontSize,
-          font: boldFont,
-          color: rgb(0.2, 0.2, 0.2),
-        });
-
-        // Answer — handle long answers by wrapping
-        const maxWidth = 562 - margin - 10;
-        const answerX = margin + 10;
-        y -= lineHeight;
-
-        const words = item.answer.split(" ");
-        let line = "";
-        for (const word of words) {
-          const testLine = line ? `${line} ${word}` : word;
-          const width = font.widthOfTextAtSize(testLine, fontSize);
-          if (width > maxWidth && line) {
-            if (y < margin + 20) {
-              page = pdfDoc.addPage([612, 792]);
-              y = 742;
-            }
-            page.drawText(line, { x: answerX, y, size: fontSize, font, color: rgb(0.1, 0.1, 0.1) });
-            y -= lineHeight;
-            line = word;
-          } else {
-            line = testLine;
-          }
+          // For overlay fallback, generate a summary PDF instead
+          filledPdfBase64 = await generateSummaryPdf(app, fields);
         }
-        if (line) {
-          if (y < margin + 20) {
-            page = pdfDoc.addPage([612, 792]);
-            y = 742;
-          }
-          page.drawText(line, { x: answerX, y, size: fontSize, font, color: rgb(0.1, 0.1, 0.1) });
-          y -= lineHeight + 4;
-        }
+      } else {
+        filledPdfBase64 = await generateSummaryPdf(app, fields);
       }
-
-      const pdfBytes = await pdfDoc.save();
 
       // Store the filled PDF
-      const pdfBlob = new Blob([Buffer.from(pdfBytes)], { type: "application/pdf" });
-      const filledPdfStorageId = await ctx.storage.store(pdfBlob);
+      const filledBlob = new Blob([Buffer.from(filledPdfBase64!, "base64")], { type: "application/pdf" });
+      const filledPdfStorageId = await ctx.storage.store(filledBlob);
 
-      // Stop typing
       if (args.linqChatId) {
-        try {
-          await ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId });
-        } catch (_) {}
+        try { await ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }); } catch (_) {}
       }
 
       await ctx.runMutation(internal.applications.updateStatus, {
@@ -418,7 +216,6 @@ export const fillApplicationPdf = internalAction({
         filledPdfStorageId,
       });
 
-      // Transition user back to active
       await ctx.runMutation(internal.users.updateState, {
         userId: args.userId,
         state: "active",
@@ -428,7 +225,7 @@ export const fillApplicationPdf = internalAction({
         activeApplicationId: undefined,
       });
 
-      const answeredCount = Object.keys(answers).length;
+      const answeredCount = fields.filter((f) => f.value).length;
       const totalCount = fields.length;
 
       await sendAndLog(
@@ -440,9 +237,7 @@ export const fillApplicationPdf = internalAction({
       console.error("Application filling failed:", error);
 
       if (args.linqChatId) {
-        try {
-          await ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId });
-        } catch (_) {}
+        try { await ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }); } catch (_) {}
       }
 
       await ctx.runMutation(internal.applications.updateStatus, {
@@ -461,6 +256,95 @@ export const fillApplicationPdf = internalAction({
     }
   },
 });
+
+// ── Generate a summary PDF when AcroForm filling isn't available ──
+
+async function generateSummaryPdf(
+  app: any,
+  fields: Array<{ id: string; label: string; section?: string; fieldType?: string; value?: string }>
+): Promise<string> {
+  const { StandardFonts, rgb } = await import("pdf-lib");
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const fontSize = 10;
+  const lineHeight = 14;
+  const margin = 50;
+
+  let page = pdfDoc.addPage([612, 792]);
+  let y = 742;
+
+  page.drawText(app.title || app.applicationTitle || "Insurance Application", {
+    x: margin, y, size: 16, font: boldFont, color: rgb(0.067, 0.094, 0.153),
+  });
+  y -= 24;
+
+  if (app.carrier) {
+    page.drawText(`Carrier: ${app.carrier}`, {
+      x: margin, y, size: 11, font, color: rgb(0.4, 0.4, 0.4),
+    });
+    y -= 20;
+  }
+
+  page.drawText(`Generated by Spot on ${new Date().toLocaleDateString("en-US")}`, {
+    x: margin, y, size: 9, font, color: rgb(0.54, 0.53, 0.47),
+  });
+  y -= 24;
+
+  page.drawLine({
+    start: { x: margin, y }, end: { x: 562, y },
+    thickness: 0.5, color: rgb(0.8, 0.8, 0.8),
+  });
+  y -= 16;
+
+  let currentSection = "";
+  const filledFields = fields.filter((f) => f.value);
+
+  for (const field of filledFields) {
+    if (field.section && field.section !== currentSection) {
+      currentSection = field.section;
+      if (y < margin + 40) { page = pdfDoc.addPage([612, 792]); y = 742; }
+      y -= 8;
+      page.drawText(currentSection.toUpperCase(), {
+        x: margin, y, size: 11, font: boldFont, color: rgb(0.067, 0.094, 0.153),
+      });
+      y -= lineHeight + 4;
+    }
+
+    if (y < margin + 20) { page = pdfDoc.addPage([612, 792]); y = 742; }
+
+    page.drawText(field.label + ":", {
+      x: margin, y, size: fontSize, font: boldFont, color: rgb(0.2, 0.2, 0.2),
+    });
+
+    const maxWidth = 562 - margin - 10;
+    const answerX = margin + 10;
+    y -= lineHeight;
+
+    const words = (field.value || "").split(" ");
+    let line = "";
+    for (const word of words) {
+      const testLine = line ? `${line} ${word}` : word;
+      const width = font.widthOfTextAtSize(testLine, fontSize);
+      if (width > maxWidth && line) {
+        if (y < margin + 20) { page = pdfDoc.addPage([612, 792]); y = 742; }
+        page.drawText(line, { x: answerX, y, size: fontSize, font, color: rgb(0.1, 0.1, 0.1) });
+        y -= lineHeight;
+        line = word;
+      } else {
+        line = testLine;
+      }
+    }
+    if (line) {
+      if (y < margin + 20) { page = pdfDoc.addPage([612, 792]); y = 742; }
+      page.drawText(line, { x: answerX, y, size: fontSize, font, color: rgb(0.1, 0.1, 0.1) });
+      y -= lineHeight + 4;
+    }
+  }
+
+  const pdfBytes = await pdfDoc.save();
+  return Buffer.from(pdfBytes).toString("base64");
+}
 
 // ── Helper: send and log (mirrors process.ts pattern) ──
 

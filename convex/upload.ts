@@ -2,96 +2,14 @@
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { sanitizeNulls } from "@claritylabs/cl-sdk";
 import {
-  classifyDocumentType,
-  extractFromPdf,
-  extractQuoteFromPdf,
-  applyExtracted,
-  applyExtractedQuote,
-  sanitizeNulls,
-} from "@claritylabs/cl-sdk";
-
-/** Maps SDK policyTypes array to a user-friendly category string. */
-function detectCategoryFromPolicyTypes(policyTypes: string[]): string {
-  if (!policyTypes || policyTypes.length === 0) return "other";
-  const t = policyTypes[0];
-  if (t === "personal_auto") return "auto";
-  if (t === "renters_ho4") return "renters";
-  if (["homeowners_ho3", "homeowners_ho5", "condo_ho6", "dwelling_fire", "mobile_home"].includes(t)) return "homeowners";
-  if (t === "flood_nfip" || t === "flood_private") return "flood";
-  if (t === "earthquake") return "earthquake";
-  if (t === "personal_umbrella") return "umbrella";
-  if (t === "pet") return "pet";
-  if (t === "travel") return "travel";
-  if (t === "watercraft" || t === "recreational_vehicle") return "recreational";
-  if (t === "farm_ranch") return "farm";
-  if (t.startsWith("commercial_") || t.startsWith("bop") || t.startsWith("workers_comp") || t.startsWith("professional_liability")) return "commercial";
-  return "other";
-}
-
-function detectCategoryKeyword(extracted: any): string {
-  const text = JSON.stringify(extracted).toLowerCase();
-  const autoKeywords = [
-    "auto", "automobile", "vehicle", "car", "collision", "comprehensive",
-    "bodily injury", "uninsured motorist", "underinsured", "motor", "driver", "vin",
-  ];
-  const tenantKeywords = [
-    "tenant", "renter", "renters", "personal property",
-    "habitational", "apartment", "lease", "landlord", "contents",
-  ];
-  const homeKeywords = [
-    "homeowners", "homeowner", "ho-3", "ho-5", "ho3", "ho5", "dwelling",
-    "condo", "ho-6", "ho6",
-  ];
-  const autoScore = autoKeywords.filter((k) => text.includes(k)).length;
-  const tenantScore = tenantKeywords.filter((k) => text.includes(k)).length;
-  const homeScore = homeKeywords.filter((k) => text.includes(k)).length;
-  if (homeScore > autoScore && homeScore > tenantScore && homeScore >= 2) return "homeowners";
-  if (autoScore > tenantScore && autoScore > homeScore && autoScore >= 2) return "auto";
-  if (tenantScore > autoScore && tenantScore > homeScore && tenantScore >= 2) return "renters";
-  return "other";
-}
-
-function detectCategory(applied: any): string {
-  const policyTypes = applied.policyTypes;
-  if (policyTypes && policyTypes.length > 0) return detectCategoryFromPolicyTypes(policyTypes);
-  return detectCategoryKeyword(applied);
-}
-
-function isPartialPolicy(applied: any): boolean {
-  const hasCoverages = applied.coverages && applied.coverages.length > 0;
-  const hasCarrier = !!applied.carrier;
-  const hasPolicyNumber = !!applied.policyNumber;
-  const hasDates = !!applied.effectiveDate && !!applied.expirationDate;
-  const hasPremium = !!applied.premium;
-  if ((hasCarrier || hasPolicyNumber) && hasDates && !hasCoverages) return true;
-  const fieldCount = [hasCarrier, hasPolicyNumber, hasDates, hasPremium, hasCoverages]
-    .filter(Boolean).length;
-  if (fieldCount <= 1) return true;
-  return false;
-}
-
-function buildPolicySummary(applied: any): string {
-  const parts: string[] = [];
-  if (applied.carrier) parts.push(`Carrier: ${applied.carrier}`);
-  if (applied.policyNumber) parts.push(`Policy #: ${applied.policyNumber}`);
-  if (applied.effectiveDate && applied.expirationDate) {
-    parts.push(`Coverage: ${applied.effectiveDate} to ${applied.expirationDate}`);
-  }
-  if (applied.premium) parts.push(`Premium: ${applied.premium}`);
-  if (applied.coverages && applied.coverages.length > 0) {
-    const topCoverages = applied.coverages
-      .slice(0, 4)
-      .map((c: any) => {
-        let line = c.name;
-        if (c.limit) line += ` (${c.limit})`;
-        return line;
-      })
-      .join("\n  - ");
-    parts.push(`Key coverages:\n  - ${topCoverages}`);
-  }
-  return parts.join("\n");
-}
+  getExtractor,
+  documentToUpdateFields,
+  extractContactsFromDocument,
+  isPartialPolicy,
+  buildPolicySummary,
+} from "./sdkAdapter";
 
 // Channel-aware send helper for upload notifications
 async function sendNotification(
@@ -161,48 +79,22 @@ export const processUploadedPolicy = internalAction({
       const buffer = await blob.arrayBuffer();
       const pdfBase64 = Buffer.from(buffer).toString("base64");
 
-      // Ack + classification + optimistic extraction — all in parallel
-      const [, classifyResult, policyExtractResult] = await Promise.all([
+      // Ack + SDK extraction in parallel
+      const [, { document, chunks }] = await Promise.all([
         sendNotification(ctx, args.userId, args.phone, "Got your upload — reading through it now", linqChatId, imessageSender),
-        classifyDocumentType(pdfBase64),
-        extractFromPdf(pdfBase64, { concurrency: 3 }).catch(() => null),
+        getExtractor().extract(pdfBase64),
       ]);
 
-      const { documentType } = classifyResult;
-
-      let extracted: any;
-      let applied: any;
-
-      if (documentType === "quote") {
-        // Quote: create record + quote extraction in parallel
-        const [policyId, quoteResult] = await Promise.all([
-          ctx.runMutation(internal.policies.create, {
-            userId: args.userId, category: "other", documentType, pdfStorageId: args.storageId,
-          }),
-          extractQuoteFromPdf(pdfBase64, { concurrency: 3 }),
-        ]);
-        extracted = quoteResult.extracted;
-        applied = sanitizeNulls(applyExtractedQuote(extracted));
-        var finalPolicyId = policyId;
-      } else {
-        // Policy: extraction already done in parallel
-        const policyId = await ctx.runMutation(internal.policies.create, {
-          userId: args.userId, category: "other", documentType, pdfStorageId: args.storageId,
-        });
-        if (policyExtractResult) {
-          extracted = policyExtractResult.extracted;
-          applied = sanitizeNulls(applyExtracted(extracted));
-        } else {
-          const result = await extractFromPdf(pdfBase64, { concurrency: 3 });
-          extracted = result.extracted;
-          applied = sanitizeNulls(applyExtracted(extracted));
-        }
-        var finalPolicyId = policyId;
-      }
-
-      const detectedCategory = detectCategory(applied);
+      const applied = documentToUpdateFields(document);
+      const detectedCategory = applied.category;
+      const documentType = document.type;
       const isQuote = documentType === "quote";
-      const partial = isPartialPolicy(applied);
+      const partial = isPartialPolicy(document);
+
+      // Create policy record
+      const finalPolicyId = await ctx.runMutation(internal.policies.create, {
+        userId: args.userId, category: "other", documentType, pdfStorageId: args.storageId,
+      });
 
       // Check for an existing policy this could be merged into
       const existingMatch = !isQuote
@@ -219,18 +111,11 @@ export const processUploadedPolicy = internalAction({
         await Promise.all([
           ctx.runMutation(internal.policies.updateExtracted, {
             policyId: finalPolicyId,
-            carrier: applied.carrier || undefined,
-            policyNumber: applied.policyNumber || undefined,
-            effectiveDate: applied.effectiveDate || undefined,
-            expirationDate: applied.expirationDate || undefined,
-            premium: applied.premium || undefined,
-            insuredName: applied.insuredName || undefined,
-            summary: applied.summary || undefined,
-            coverages: applied.coverages || undefined,
-            rawExtracted: applied,
-            category: detectedCategory,
-            policyTypes: applied.policyTypes || undefined,
+            ...applied,
             status: "ready",
+          }),
+          ctx.runMutation(internal.documentChunks.saveChunks, {
+            policyId: finalPolicyId, userId: args.userId, chunks: sanitizeNulls(chunks),
           }),
           ctx.runMutation(internal.users.setPendingMerge, {
             userId: args.userId,
@@ -243,7 +128,18 @@ export const processUploadedPolicy = internalAction({
           }),
         ]);
 
-        const summary = buildPolicySummary(applied);
+        // Extract contacts from document
+        const contacts = extractContactsFromDocument(document);
+        for (const c of contacts) {
+          await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
+        }
+
+        // Schedule async embedding of chunks
+        ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
+          policyId: finalPolicyId, userId: args.userId,
+        });
+
+        const summary = buildPolicySummary(document);
         const matchLabel = existingMatch.carrier
           ? `your ${existingMatch.carrier} policy`
           : `your existing ${detectedCategory} policy`;
@@ -259,18 +155,11 @@ export const processUploadedPolicy = internalAction({
       await Promise.all([
         ctx.runMutation(internal.policies.updateExtracted, {
           policyId: finalPolicyId,
-          carrier: applied.carrier || undefined,
-          policyNumber: applied.policyNumber || undefined,
-          effectiveDate: applied.effectiveDate || undefined,
-          expirationDate: applied.expirationDate || undefined,
-          premium: applied.premium || undefined,
-          insuredName: applied.insuredName || undefined,
-          summary: applied.summary || undefined,
-          coverages: applied.coverages || undefined,
-          rawExtracted: applied,
-          category: detectedCategory,
-          policyTypes: applied.policyTypes || undefined,
+          ...applied,
           status: "ready",
+        }),
+        ctx.runMutation(internal.documentChunks.saveChunks, {
+          policyId: finalPolicyId, userId: args.userId, chunks: sanitizeNulls(chunks),
         }),
         ctx.runMutation(internal.users.updateState, {
           userId: args.userId,
@@ -278,7 +167,18 @@ export const processUploadedPolicy = internalAction({
         }),
       ]);
 
-      const summary = buildPolicySummary(applied);
+      // Extract contacts from document
+      const contacts = extractContactsFromDocument(document);
+      for (const c of contacts) {
+        await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
+      }
+
+      // Schedule async embedding of chunks
+      ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
+        policyId: finalPolicyId, userId: args.userId,
+      });
+
+      const summary = buildPolicySummary(document);
       const docLabel = isQuote ? "quote" : "policy";
 
       let closingMsg: string;

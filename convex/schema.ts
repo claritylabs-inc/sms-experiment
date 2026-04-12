@@ -120,23 +120,21 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_user_email", ["userId", "email"]),
 
-  // Insurance applications — tracks uploaded applications being filled
+  // Insurance applications — tracks uploaded applications being filled (SDK ApplicationState)
   applications: defineTable({
     userId: v.id("users"),
     pdfStorageId: v.id("_storage"), // original application PDF
     filledPdfStorageId: v.optional(v.id("_storage")), // filled application PDF
-    status: v.string(), // "extracting" | "answering" | "confirming" | "filling" | "ready" | "failed"
-    // Extracted questions/fields from the application
-    fields: v.optional(v.any()), // Array<{ id: string, question: string, section?: string, type: "text"|"date"|"number"|"boolean"|"choice", choices?: string[], required: boolean }>
-    // Answers: auto-filled from policies + user-provided
-    answers: v.optional(v.any()), // Record<fieldId, { value: string, source: "policy"|"user"|"confirmed", policyId?: string }>
-    // Tracking which batch of questions we're on
-    currentBatch: v.optional(v.number()), // 0-indexed batch number
-    totalBatches: v.optional(v.number()),
-    // Metadata
-    applicationTitle: v.optional(v.string()), // e.g. "ACORD 125 - Commercial Insurance Application"
+    status: v.string(), // SDK: "classifying"|"extracting"|"auto_filling"|"batching"|"collecting"|"confirming"|"mapping"|"complete"|"failed"
+    fields: v.optional(v.any()), // ApplicationField[] from SDK
+    answers: v.optional(v.any()), // Record<fieldId, { value, source }> — legacy compat for process.ts question handler
+    batches: v.optional(v.any()), // string[][] — field ID batches from SDK batcher
+    currentBatchIndex: v.optional(v.number()), // 0-indexed batch number (SDK field name)
+    title: v.optional(v.string()), // application title
+    applicationType: v.optional(v.string()), // detected application type
     carrier: v.optional(v.string()),
     createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
   }).index("by_user", ["userId"]),
 
   // Per-user agent memory — persistent context that grows over time
@@ -166,6 +164,37 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_type_user", ["alertType", "userId"]),
+
+  // Document chunks — extraction chunks with embeddings for vector search
+  documentChunks: defineTable({
+    policyId: v.id("policies"),
+    userId: v.id("users"),
+    chunkId: v.string(), // SDK-generated deterministic ID e.g. "doc-123:coverage:2"
+    documentId: v.string(), // SDK document ID
+    type: v.string(), // "carrier_info" | "named_insured" | "coverage" | "endorsement" | "exclusion" | "condition" | "section" | "declaration" | "loss_history" | "premium" | "supplementary"
+    text: v.string(), // Human-readable text for embedding/search
+    metadata: v.optional(v.any()), // Structured metadata for filtering
+    embedding: v.optional(v.array(v.float64())), // OpenAI text-embedding-3-small vector
+    createdAt: v.number(),
+  })
+    .index("by_policy", ["policyId"])
+    .index("by_user", ["userId"])
+    .index("by_chunk_id", ["chunkId"])
+    .index("by_user_type", ["userId", "type"]),
+
+  // Conversation turns — for query agent context and history search
+  conversationTurns: defineTable({
+    userId: v.id("users"),
+    conversationId: v.string(), // phone number or session ID
+    role: v.string(), // "user" | "assistant" | "tool"
+    content: v.string(),
+    toolName: v.optional(v.string()),
+    toolResult: v.optional(v.string()),
+    embedding: v.optional(v.array(v.float64())), // for semantic history search
+    timestamp: v.number(),
+  })
+    .index("by_conversation", ["conversationId"])
+    .index("by_user", ["userId"]),
 
   // Dedup lock table — prevents duplicate webhook processing
   webhookLocks: defineTable({

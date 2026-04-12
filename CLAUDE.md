@@ -445,18 +445,49 @@ This deletes the user, all their messages, and all their policies.
 
 ## CL SDK Usage
 
-The Clarity Labs SDK (`@claritylabs/cl-sdk`) is the core intelligence layer:
+The Clarity Labs SDK (`@claritylabs/cl-sdk`) v0.2.0 is the core intelligence layer:
 
 | Function | Used In | Purpose |
 |----------|---------|---------|
-| `classifyDocumentType` | `process.ts`, `upload.ts` | Determines if PDF is a policy or quote |
-| `extractFromPdf` | `process.ts`, `upload.ts` | Extracts structured data from policy PDFs |
-| `extractQuoteFromPdf` | `process.ts`, `upload.ts` | Extracts structured data from quote PDFs |
+| `classifyDocumentType` | `process.ts`, `upload.ts` | Determines if PDF is a policy or quote (requires `models` param) |
+| `extractFromPdf` | `process.ts`, `upload.ts` | Extracts structured data from policy PDFs (requires `models` param) |
+| `extractQuoteFromPdf` | `process.ts`, `upload.ts` | Extracts structured data from quote PDFs (requires `models` param) |
 | `applyExtracted` | `process.ts`, `upload.ts` | Normalizes policy extraction into standard fields |
 | `applyExtractedQuote` | `process.ts`, `upload.ts` | Normalizes quote extraction into standard fields |
-| `buildAgentSystemPrompt` | `process.ts` | Generates system prompt tuned for SMS + direct intent |
-| `buildDocumentContext` | `process.ts` | Builds document context string from extracted policy data |
+| `buildAgentSystemPrompt` | `process.ts` | Generates system prompt using `AgentContext` object |
+| `buildDocumentContext` | `process.ts`, `emailActions.ts` | Builds document context; returns `{ context, relevantPolicyIds, relevantQuoteIds }` |
 | `sanitizeNulls` | `process.ts`, `upload.ts` | Strips null values from extraction output for Convex safety |
+| `createUniformModelConfig` | `process.ts`, `upload.ts` | Creates ModelConfig using a single model for all extraction passes |
+
+### Model Configuration
+
+Extraction functions now require a `models: ModelConfig` parameter using Vercel AI SDK `LanguageModel` objects:
+
+```typescript
+import { createAnthropic } from "@ai-sdk/anthropic"
+import { createUniformModelConfig } from "@claritylabs/cl-sdk"
+
+const anthropic = createAnthropic()
+const models = createUniformModelConfig(anthropic("claude-sonnet-4-6"))
+
+// Use in extraction calls
+const result = await extractFromPdf(pdfBase64, { concurrency: 3, models })
+```
+
+### AgentContext Pattern
+
+`buildAgentSystemPrompt` now uses an `AgentContext` object instead of positional parameters:
+
+```typescript
+const prompt = buildAgentSystemPrompt({
+  platform: "sms",        // "email" | "chat" | "sms"
+  intent: "direct",       // "direct" | "mediated" | "observed"
+  companyName: "Spot",
+  siteUrl: "https://secure.claritylabs.inc",
+  coiHandling: "ignore",  // "broker" | "user" | "member" | "ignore"
+  // ... other optional fields
+})
+```
 
 ---
 

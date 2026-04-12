@@ -5,8 +5,9 @@ import { v } from "convex/values";
 import { getModel, generateTextWithFallback } from "./models";
 import {
   buildAgentSystemPrompt,
-  buildDocumentContext,
+  type InsuranceDocument,
 } from "@claritylabs/cl-sdk";
+import { buildDocumentContextFromDocs } from "./sdkAdapter";
 
 function generateThreadId(): string {
   const chars = "abcdefghijkmnpqrstuvwxyz23456789";
@@ -271,30 +272,11 @@ export const handleInboundEmail = internalAction({
 
     await ctx.runMutation(internal.email.updateThreadActivity, { threadId: thread._id });
 
-    // Build document context
-    const policyDocs: any[] = [];
-    const quoteDocs: any[] = [];
-    for (const p of readyPolicies) {
-      const raw = p.rawExtracted as any;
-      if (!raw) continue;
-      const base = {
-        id: p._id,
-        carrier: raw.carrier || p.carrier || "Unknown",
-        insuredName: raw.insuredName || p.insuredName || "Unknown",
-        premium: raw.premium || p.premium,
-        summary: raw.summary || p.summary,
-        policyTypes: raw.policyTypes,
-        coverages: raw.coverages || p.coverages || [],
-        sections: raw.document?.sections || raw.sections || [],
-      };
-      if (p.documentType === "quote") {
-        quoteDocs.push({ ...base, type: "quote" as const, quoteNumber: raw.quoteNumber || p.policyNumber || "", proposedEffectiveDate: raw.proposedEffectiveDate || p.effectiveDate, proposedExpirationDate: raw.proposedExpirationDate || p.expirationDate });
-      } else {
-        policyDocs.push({ ...base, type: "policy" as const, policyNumber: raw.policyNumber || p.policyNumber || "", effectiveDate: raw.effectiveDate || p.effectiveDate || "", expirationDate: raw.expirationDate || p.expirationDate || "" });
-      }
-    }
-
-    const { context: documentContext } = buildDocumentContext(policyDocs, quoteDocs, replyText);
+    // Build document context from InsuranceDocument objects stored in rawExtracted
+    const documents: InsuranceDocument[] = readyPolicies
+      .map((p: any) => p.rawExtracted as InsuranceDocument)
+      .filter(Boolean);
+    const documentContext = buildDocumentContextFromDocs(documents);
 
     const systemPrompt = `You are Spot, an insurance assistant replying to an email thread on behalf of a policyholder.
 

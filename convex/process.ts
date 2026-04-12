@@ -3,14 +3,9 @@ import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import {
-  classifyDocumentType,
-  extractFromPdf,
-  extractQuoteFromPdf,
-  applyExtracted,
-  applyExtractedQuote,
   buildAgentSystemPrompt,
-  buildDocumentContext,
   sanitizeNulls,
+  type InsuranceDocument,
 } from "@claritylabs/cl-sdk";
 import { tool, stepCountIs } from "ai";
 import { getModel, generateTextWithFallback } from "./models";
@@ -25,57 +20,21 @@ import {
 import { generateCoiPdf, buildCoiInput } from "./coiGenerator";
 import { sendAndLog, sendBurst, sleep, getUploadLink } from "./sendHelpers";
 import { buildMemoryContext } from "./memory";
+import {
+  getExtractor,
+  documentToUpdateFields,
+  detectCategory,
+  extractContactsFromDocument,
+  buildDocumentContextFromDocs,
+  isPartialPolicy,
+  buildPolicySummary,
+  makeEmbedText,
+  createConvexMemoryStore,
+  getQueryAgent,
+} from "./sdkAdapter";
 
 // ── Helpers ──
-
-/** Maps SDK policyTypes array to a user-friendly category string. */
-function detectCategoryFromPolicyTypes(policyTypes: string[]): string {
-  if (!policyTypes || policyTypes.length === 0) return "other";
-  const t = policyTypes[0]; // primary type drives the category
-  if (t === "personal_auto") return "auto";
-  if (t === "renters_ho4") return "renters";
-  if (["homeowners_ho3", "homeowners_ho5", "condo_ho6", "dwelling_fire", "mobile_home"].includes(t)) return "homeowners";
-  if (t === "flood_nfip" || t === "flood_private") return "flood";
-  if (t === "earthquake") return "earthquake";
-  if (t === "personal_umbrella") return "umbrella";
-  if (t === "pet") return "pet";
-  if (t === "travel") return "travel";
-  if (t === "watercraft" || t === "recreational_vehicle") return "recreational";
-  if (t === "farm_ranch") return "farm";
-  if (t.startsWith("commercial_") || t.startsWith("bop") || t.startsWith("workers_comp") || t.startsWith("professional_liability")) return "commercial";
-  return "other";
-}
-
-/** Fallback keyword-based detection when policyTypes is empty. */
-function detectCategoryKeyword(extracted: any): string {
-  const text = JSON.stringify(extracted).toLowerCase();
-  const autoKeywords = [
-    "auto", "automobile", "vehicle", "car", "collision", "comprehensive",
-    "bodily injury", "uninsured motorist", "underinsured", "motor", "driver",
-    "vin", "garage",
-  ];
-  const tenantKeywords = [
-    "tenant", "renter", "renters", "personal property",
-    "habitational", "apartment", "lease", "landlord", "contents",
-  ];
-  const homeKeywords = [
-    "homeowners", "homeowner", "ho-3", "ho-5", "ho3", "ho5", "dwelling",
-    "condo", "ho-6", "ho6",
-  ];
-  const autoScore = autoKeywords.filter((k) => text.includes(k)).length;
-  const tenantScore = tenantKeywords.filter((k) => text.includes(k)).length;
-  const homeScore = homeKeywords.filter((k) => text.includes(k)).length;
-  if (homeScore > autoScore && homeScore > tenantScore && homeScore >= 2) return "homeowners";
-  if (autoScore > tenantScore && autoScore > homeScore && autoScore >= 2) return "auto";
-  if (tenantScore > autoScore && tenantScore > homeScore && tenantScore >= 2) return "renters";
-  return "other";
-}
-
-function detectCategory(applied: any): string {
-  const policyTypes = applied.policyTypes;
-  if (policyTypes && policyTypes.length > 0) return detectCategoryFromPolicyTypes(policyTypes);
-  return detectCategoryKeyword(applied);
-}
+// detectCategory, isPartialPolicy, buildPolicySummary are imported from sdkAdapter
 
 const CATEGORY_LABELS: Record<string, string> = {
   auto: "Auto",
@@ -106,56 +65,7 @@ function friendlyCategoryLabel(category: string, policyTypes?: string[]): string
   return base;
 }
 
-function buildPolicySummary(applied: any, category?: string): string {
-  const parts: string[] = [];
-  if (category) {
-    const label = friendlyCategoryLabel(category, applied.policyTypes);
-    parts.push(label);
-  }
-  if (applied.carrier) parts.push(`${applied.carrier}`);
-  if (applied.policyNumber) parts.push(`Policy #${applied.policyNumber}`);
-  if (applied.effectiveDate && applied.expirationDate) {
-    parts.push(`${applied.effectiveDate} → ${applied.expirationDate}`);
-  }
-  if (applied.premium) parts.push(`Premium: ${applied.premium}`);
-
-  let summary = parts.join(" · ");
-
-  if (applied.coverages && applied.coverages.length > 0) {
-    const topCoverages = applied.coverages
-      .slice(0, 4)
-      .map((c: any) => {
-        let line = `· ${c.name}`;
-        if (c.limit) line += ` — ${c.limit}`;
-        return line;
-      })
-      .join("\n");
-    summary += `\n\n${topCoverages}`;
-  }
-  return summary;
-}
-
-/**
- * Heuristic to detect if an extracted policy looks like a partial document
- * (e.g., just a declarations page without full coverage details).
- */
-function isPartialPolicy(applied: any): boolean {
-  const hasCoverages = applied.coverages && applied.coverages.length > 0;
-  const hasCarrier = !!applied.carrier;
-  const hasPolicyNumber = !!applied.policyNumber;
-  const hasDates = !!applied.effectiveDate && !!applied.expirationDate;
-  const hasPremium = !!applied.premium;
-
-  // If we have basic dec page info but no coverages, likely just a dec page
-  if ((hasCarrier || hasPolicyNumber) && hasDates && !hasCoverages) return true;
-
-  // If we have almost nothing extracted, it's a partial/stub
-  const fieldCount = [hasCarrier, hasPolicyNumber, hasDates, hasPremium, hasCoverages]
-    .filter(Boolean).length;
-  if (fieldCount <= 1) return true;
-
-  return false;
-}
+// buildPolicySummary and isPartialPolicy are imported from sdkAdapter
 
 function parseCategoryInput(input: string): string | null {
   const clean = input.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
@@ -608,7 +518,42 @@ async function isApplicationForm(pdfBase64: string): Promise<boolean> {
   }
 }
 
+// ── Async chunk embedding (scheduled after extraction so it doesn't block) ──
+
+export const embedChunksForPolicy = internalAction({
+  args: {
+    policyId: v.id("policies"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    try {
+      const chunks = await ctx.runQuery(internal.documentChunks.getByPolicy, {
+        policyId: args.policyId,
+      });
+      const embed = makeEmbedText();
+
+      for (const chunk of chunks) {
+        if (chunk.embedding && chunk.embedding.length > 0) continue; // already embedded
+        try {
+          const embedding = await embed(chunk.text);
+          await ctx.runMutation(internal.documentChunks.updateEmbedding, {
+            chunkId: chunk.chunkId,
+            embedding,
+          });
+        } catch (e) {
+          console.warn(`Embedding failed for chunk ${chunk.chunkId}:`, e);
+        }
+      }
+      console.log(`[embedChunks] Embedded ${chunks.length} chunks for policy ${args.policyId}`);
+    } catch (e) {
+      console.error("[embedChunks] Failed:", e);
+    }
+  },
+});
+
 // ── Internal extraction pipeline (shared by processPolicy and processMedia) ──
+// Uses CL SDK v0.5.0's createExtractor — single extract() call handles
+// classification, extraction, review, assembly, and chunking.
 
 async function processExtractionPipeline(
   ctx: any,
@@ -621,10 +566,9 @@ async function processExtractionPipeline(
     imessageSender?: string;
   }
 ) {
-  // Run classification, extraction, and application detection in parallel
-  const [classifyResult, policyExtractResult, isApp] = await Promise.all([
-    classifyDocumentType(args.pdfBase64),
-    extractFromPdf(args.pdfBase64, { concurrency: 3 }).catch(() => null),
+  // Run SDK extraction and application detection in parallel
+  const [extractionResult, isApp] = await Promise.all([
+    getExtractor().extract(args.pdfBase64),
     isApplicationForm(args.pdfBase64),
   ]);
 
@@ -644,56 +588,35 @@ async function processExtractionPipeline(
     return;
   }
 
-  const { documentType } = classifyResult;
+  const { document, chunks } = extractionResult;
+  const documentType = document.type; // "policy" | "quote"
+  const applied = documentToUpdateFields(document);
+  const detectedCategory = applied.category;
 
   const startTypingIfLinq = args.linqChatId
     ? ctx.runAction(internal.sendLinq.startTyping, { chatId: args.linqChatId }).catch(() => {})
     : Promise.resolve();
 
-  let extracted: any;
-  let applied: any;
-  let finalPolicyId: any;
-
-  if (documentType === "quote") {
-    const [{ policyId }, , , quoteResult] = await Promise.all([
-      ctx.runMutation(internal.policies.create, {
-        userId: args.userId, category: "other", documentType, pdfStorageId: args.pdfStorageId,
-      }).then((id: any) => ({ policyId: id })),
-      sendAndLog(ctx, args.userId, args.phone, "Looks like a quote — pulling out the details", args.linqChatId, args.imessageSender),
-      startTypingIfLinq,
-      extractQuoteFromPdf(args.pdfBase64, { concurrency: 3 }),
-    ]);
-    extracted = quoteResult.extracted;
-    applied = sanitizeNulls(applyExtractedQuote(extracted));
-    finalPolicyId = policyId;
-  } else {
-    const [policyId] = await Promise.all([
-      ctx.runMutation(internal.policies.create, {
-        userId: args.userId, category: "other", documentType, pdfStorageId: args.pdfStorageId,
-      }),
-      sendAndLog(ctx, args.userId, args.phone, "Found your policy — pulling out coverages and limits", args.linqChatId, args.imessageSender),
-      startTypingIfLinq,
-    ]);
-
-    if (policyExtractResult) {
-      extracted = policyExtractResult.extracted;
-      applied = sanitizeNulls(applyExtracted(extracted));
-    } else {
-      const result = await extractFromPdf(args.pdfBase64, { concurrency: 3 });
-      extracted = result.extracted;
-      applied = sanitizeNulls(applyExtracted(extracted));
-    }
-    finalPolicyId = policyId;
-  }
-
-  const detectedCategory = detectCategory(applied);
+  // Create policy record + send ack in parallel
+  const docLabel = documentType === "quote" ? "quote" : "policy";
+  const [finalPolicyId] = await Promise.all([
+    ctx.runMutation(internal.policies.create, {
+      userId: args.userId, category: "other", documentType, pdfStorageId: args.pdfStorageId,
+    }),
+    sendAndLog(ctx, args.userId, args.phone,
+      documentType === "quote"
+        ? "Looks like a quote — pulling out the details"
+        : "Found your policy — pulling out coverages and limits",
+      args.linqChatId, args.imessageSender),
+    startTypingIfLinq,
+  ]);
 
   const stopTypingIfLinq = args.linqChatId
     ? ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }).catch(() => {})
     : Promise.resolve();
 
   const isQuote = documentType === "quote";
-  const partial = isPartialPolicy(applied);
+  const partial = isPartialPolicy(document);
 
   // Check for an existing policy this could be merged into
   const existingMatch = !isQuote
@@ -707,22 +630,17 @@ async function processExtractionPipeline(
 
   // If we found a match and this is a different document, offer to merge
   if (existingMatch && existingMatch._id !== finalPolicyId) {
-    // Save the new policy record (so data isn't lost) but set up merge flow
     await Promise.all([
       ctx.runMutation(internal.policies.updateExtracted, {
         policyId: finalPolicyId,
-        carrier: applied.carrier || undefined,
-        policyNumber: applied.policyNumber || undefined,
-        effectiveDate: applied.effectiveDate || undefined,
-        expirationDate: applied.expirationDate || undefined,
-        premium: applied.premium || undefined,
-        insuredName: applied.insuredName || undefined,
-        summary: applied.summary || undefined,
-        coverages: applied.coverages || undefined,
-        rawExtracted: applied,
-        category: detectedCategory,
-        policyTypes: applied.policyTypes || undefined,
+        ...applied,
         status: "ready",
+      }),
+      // Store extraction chunks
+      ctx.runMutation(internal.documentChunks.saveChunks, {
+        policyId: finalPolicyId,
+        userId: args.userId,
+        chunks: sanitizeNulls(chunks),
       }),
       ctx.runMutation(internal.users.setPendingMerge, {
         userId: args.userId,
@@ -736,7 +654,19 @@ async function processExtractionPipeline(
       stopTypingIfLinq,
     ]);
 
-    const summary = buildPolicySummary(applied, detectedCategory);
+    // Extract and save contacts from document parties
+    const contacts = extractContactsFromDocument(document);
+    for (const c of contacts) {
+      await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
+    }
+
+    // Schedule async embedding
+    ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
+      policyId: finalPolicyId,
+      userId: args.userId,
+    });
+
+    const summary = buildPolicySummary(document);
     const matchLabel = existingMatch.carrier
       ? `your ${existingMatch.carrier} ${CATEGORY_LABELS[existingMatch.category] || existingMatch.category} policy`
       : `your existing ${CATEGORY_LABELS[existingMatch.category] || existingMatch.category} policy`;
@@ -750,25 +680,20 @@ async function processExtractionPipeline(
   }
 
   // No merge — standard flow
-  // For auto/home policies, transition to awaiting_insurance_slip instead of active
   const isSlipEligible = !isQuote &&
     (detectedCategory === "auto" || detectedCategory === "homeowners");
 
   await Promise.all([
     ctx.runMutation(internal.policies.updateExtracted, {
       policyId: finalPolicyId,
-      carrier: applied.carrier || undefined,
-      policyNumber: applied.policyNumber || undefined,
-      effectiveDate: applied.effectiveDate || undefined,
-      expirationDate: applied.expirationDate || undefined,
-      premium: applied.premium || undefined,
-      insuredName: applied.insuredName || undefined,
-      summary: applied.summary || undefined,
-      coverages: applied.coverages || undefined,
-      rawExtracted: applied,
-      category: detectedCategory,
-      policyTypes: applied.policyTypes || undefined,
+      ...applied,
       status: "ready",
+    }),
+    // Store extraction chunks for vector search
+    ctx.runMutation(internal.documentChunks.saveChunks, {
+      policyId: finalPolicyId,
+      userId: args.userId,
+      chunks: sanitizeNulls(chunks),
     }),
     ctx.runMutation(internal.users.updateState, {
       userId: args.userId,
@@ -777,9 +702,14 @@ async function processExtractionPipeline(
     stopTypingIfLinq,
   ]);
 
-  const summary = buildPolicySummary(applied, detectedCategory);
+  // Extract and save contacts from document parties
+  const contacts = extractContactsFromDocument(document);
+  for (const c of contacts) {
+    await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
+  }
 
-  // Build closing message based on what we detected
+  const summary = buildPolicySummary(document);
+
   let closingMsg: string;
   if (partial) {
     closingMsg = "Looks like this might be just a declarations page or partial document. If you have the full policy, send it over and I'll combine them for a more complete picture.";
@@ -794,6 +724,12 @@ async function processExtractionPipeline(
     summary,
     closingMsg,
   ], args.linqChatId, args.imessageSender);
+
+  // Schedule async embedding of chunks (non-blocking)
+  ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
+    policyId: finalPolicyId,
+    userId: args.userId,
+  });
 
   // Schedule proactive health check analysis (2s delay so summary texts arrive first)
   if (!isQuote && !partial) {
@@ -1169,34 +1105,12 @@ export const executePolicyMerge = internalAction({
       const mergedBlob = new Blob([Buffer.from(mergedBase64, "base64")], { type: "application/pdf" });
       const mergedStorageId = await ctx.storage.store(mergedBlob);
 
-      // Re-extract from the merged document
-      const [classifyResult, extractResult] = await Promise.all([
-        classifyDocumentType(mergedBase64),
-        extractFromPdf(mergedBase64, { concurrency: 3 }).catch(() => null),
-      ]);
-
-      let extracted: any;
-      let applied: any;
-
-      if (classifyResult.documentType === "quote") {
-        const quoteResult = extractResult || await extractQuoteFromPdf(mergedBase64, { concurrency: 3 });
-        extracted = quoteResult.extracted;
-        applied = sanitizeNulls(applyExtractedQuote(extracted));
-      } else {
-        if (extractResult) {
-          extracted = extractResult.extracted;
-          applied = sanitizeNulls(applyExtracted(extracted));
-        } else {
-          const result = await extractFromPdf(mergedBase64, { concurrency: 3 });
-          extracted = result.extracted;
-          applied = sanitizeNulls(applyExtracted(extracted));
-        }
-      }
-
-      const detectedCategory = detectCategory(applied);
+      // Re-extract from the merged document using SDK v0.5.0 pipeline
+      const { document: mergedDoc, chunks: mergedChunks } = await getExtractor().extract(mergedBase64);
+      const applied = documentToUpdateFields(mergedDoc);
+      const detectedCategory = applied.category;
 
       // Update the existing policy with merged data, delete the duplicate
-      // Find the new policy record that was created during extraction
       const userPolicies = await ctx.runQuery(internal.policies.getByUser, {
         userId: args.userId,
       });
@@ -1207,18 +1121,14 @@ export const executePolicyMerge = internalAction({
       await Promise.all([
         ctx.runMutation(internal.policies.updateExtracted, {
           policyId: args.existingPolicyId,
-          carrier: applied.carrier || undefined,
-          policyNumber: applied.policyNumber || undefined,
-          effectiveDate: applied.effectiveDate || undefined,
-          expirationDate: applied.expirationDate || undefined,
-          premium: applied.premium || undefined,
-          insuredName: applied.insuredName || undefined,
-          summary: applied.summary || undefined,
-          coverages: applied.coverages || undefined,
-          rawExtracted: applied,
-          category: detectedCategory,
-          policyTypes: applied.policyTypes || undefined,
+          ...applied,
           status: "ready",
+        }),
+        // Store extraction chunks
+        ctx.runMutation(internal.documentChunks.saveChunks, {
+          policyId: args.existingPolicyId,
+          userId: args.userId,
+          chunks: sanitizeNulls(mergedChunks),
         }),
         // Update the storage ID to the merged PDF
         ctx.runMutation(internal.policies.updatePdfStorageId, {
@@ -1231,7 +1141,19 @@ export const executePolicyMerge = internalAction({
           : []),
       ]);
 
-      const summary = buildPolicySummary(applied, detectedCategory);
+      // Extract contacts from merged document
+      const contacts = extractContactsFromDocument(mergedDoc);
+      for (const c of contacts) {
+        await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
+      }
+
+      // Schedule async embedding of merged chunks
+      ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
+        policyId: args.existingPolicyId,
+        userId: args.userId,
+      });
+
+      const summary = buildPolicySummary(mergedDoc);
       const label = friendlyCategoryLabel(detectedCategory, applied.policyTypes);
       await sendBurst(ctx, args.userId, args.phone, [
         `Done — merged your ${label} documents and re-read the combined policy`,
@@ -1549,7 +1471,7 @@ export const handleAppQuestions = internalAction({
       required: boolean;
     }>;
     const answers = (app.answers || {}) as Record<string, { value: string; source: string }>;
-    const currentBatch = app.currentBatch || 0;
+    const currentBatch = app.currentBatchIndex || 0;
 
     // Get unanswered fields
     const unansweredRequired = fields.filter((f) => f.required && !answers[f.id]);
@@ -1592,7 +1514,7 @@ export const handleAppQuestions = internalAction({
       await ctx.runMutation(internal.applications.updateAnswers, {
         applicationId: app._id,
         answers: updatedAnswers,
-        currentBatch: 0,
+        currentBatchIndex: 0,
       });
 
       const batch = unanswered.slice(0, BATCH_SIZE);
@@ -1728,7 +1650,7 @@ If you can't parse their intent, respond with: {"updates": [], "clarification": 
         await ctx.runMutation(internal.applications.updateAnswers, {
           applicationId: app._id,
           answers: updatedAnswers,
-          currentBatch: currentBatch + 1,
+          currentBatchIndex: currentBatch + 1,
           status: "confirming",
         });
 
@@ -1762,7 +1684,7 @@ If you can't parse their intent, respond with: {"updates": [], "clarification": 
       await ctx.runMutation(internal.applications.updateAnswers, {
         applicationId: app._id,
         answers: updatedAnswers,
-        currentBatch: newBatchNum,
+        currentBatchIndex: newBatchNum,
       });
 
       const batchText = nextBatch.map((f, i) =>
@@ -2145,46 +2067,11 @@ Proactive awareness:
 - Don't be pushy about gaps — mention them once when relevant, not repeatedly.
 `;
 
-      // Build document context
-      const policyDocs: any[] = [];
-      const quoteDocs: any[] = [];
-      for (const p of readyPolicies) {
-        const raw = p.rawExtracted as any;
-        if (!raw) continue;
-        const base = {
-          id: p._id,
-          carrier: raw.carrier || p.carrier || "Unknown",
-          insuredName: raw.insuredName || p.insuredName || "Unknown",
-          premium: raw.premium || p.premium,
-          summary: raw.summary || p.summary,
-          policyTypes: raw.policyTypes,
-          coverages: raw.coverages || p.coverages || [],
-          sections: raw.document?.sections || raw.sections || [],
-        };
-        if (p.documentType === "quote") {
-          quoteDocs.push({
-            ...base,
-            type: "quote" as const,
-            quoteNumber: raw.quoteNumber || p.policyNumber || "",
-            proposedEffectiveDate: raw.proposedEffectiveDate || p.effectiveDate,
-            proposedExpirationDate: raw.proposedExpirationDate || p.expirationDate,
-            quoteExpirationDate: raw.quoteExpirationDate,
-            subjectivities: raw.subjectivities,
-            underwritingConditions: raw.underwritingConditions,
-            premiumBreakdown: raw.premiumBreakdown,
-          });
-        } else {
-          policyDocs.push({
-            ...base,
-            type: "policy" as const,
-            policyNumber: raw.policyNumber || p.policyNumber || "",
-            effectiveDate: raw.effectiveDate || p.effectiveDate || "",
-            expirationDate: raw.expirationDate || p.expirationDate || "",
-          });
-        }
-      }
-
-      const { context: documentContext } = buildDocumentContext(policyDocs, quoteDocs, args.question);
+      // Build document context from InsuranceDocument objects stored in rawExtracted
+      const documents: InsuranceDocument[] = readyPolicies
+        .map((p: any) => p.rawExtracted as InsuranceDocument)
+        .filter(Boolean);
+      const documentContext = buildDocumentContextFromDocs(documents);
 
       const isImChannel = !!(args.linqChatId || args.imessageSender);
       const maxOutputTokens = isImChannel ? 800 : 400;
@@ -2276,7 +2163,7 @@ Proactive awareness:
       const userApps = await ctx.runQuery(internal.applications.getByUser, { userId: args.userId });
       const readyApp = userApps.find((a: any) => a.status === "ready" && a.filledPdfStorageId);
       const appNote = readyApp
-        ? `\n\nCOMPLETED APPLICATION: The user has a filled "${readyApp.applicationTitle || "insurance application"}" ready to send. If they ask to send/email the application, use the send_application tool.`
+        ? `\n\nCOMPLETED APPLICATION: The user has a filled "${readyApp.title || "insurance application"}" ready to send. If they ask to send/email the application, use the send_application tool.`
         : "";
 
       // Build memory context — persistent knowledge about this person
@@ -2573,11 +2460,11 @@ Proactive awareness:
                   recipientEmail: input.recipientEmail,
                   userName: user.name || "Policyholder",
                   userEmail: user.email,
-                  policyData: { applicationTitle: readyApp.applicationTitle, carrier: readyApp.carrier },
-                  customMessage: input.customMessage || `Please find the completed ${readyApp.applicationTitle || "insurance application"} attached.`,
+                  policyData: { applicationTitle: readyApp.title, carrier: readyApp.carrier },
+                  customMessage: input.customMessage || `Please find the completed ${readyApp.title || "insurance application"} attached.`,
                 });
 
-                const subject = `${readyApp.applicationTitle || "Insurance Application"} — ${readyApp.carrier || "Completed"}`.trim();
+                const subject = `${readyApp.title || "Insurance Application"} — ${readyApp.carrier || "Completed"}`.trim();
 
                 const peId = await ctx.runMutation(internal.email.createPendingEmail, {
                   userId: args.userId,
@@ -2769,52 +2656,43 @@ export const reextractPolicy = internalAction({
       const buffer = await blob.arrayBuffer();
       const pdfBase64 = Buffer.from(buffer).toString("base64");
 
-      // Re-run extraction with latest pipeline
-      const [classifyResult, extractResult] = await Promise.all([
-        classifyDocumentType(pdfBase64),
-        extractFromPdf(pdfBase64, { concurrency: 3 }).catch(() => null),
-      ]);
-
-      const { documentType } = classifyResult;
-
-      // Progress: extraction underway
+      // Re-run extraction with SDK v0.5.0 pipeline
       await sendAndLog(ctx, args.userId, args.phone, "Running it through the latest extraction — pulling out coverages and limits", args.linqChatId, args.imessageSender);
 
-      let applied: any;
-      if (documentType === "quote") {
-        const quoteResult = await extractQuoteFromPdf(pdfBase64, { concurrency: 3 });
-        applied = sanitizeNulls(applyExtractedQuote(quoteResult.extracted));
-      } else if (extractResult) {
-        applied = sanitizeNulls(applyExtracted(extractResult.extracted));
-      } else {
-        const result = await extractFromPdf(pdfBase64, { concurrency: 3 });
-        applied = sanitizeNulls(applyExtracted(result.extracted));
-      }
-
-      const detectedCategory = detectCategory(applied);
+      const { document: reDoc, chunks: reChunks } = await getExtractor().extract(pdfBase64);
+      const applied = documentToUpdateFields(reDoc);
 
       // Stop typing before sending results
       if (args.linqChatId) {
         try { await ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }); } catch (_) {}
       }
 
-      await ctx.runMutation(internal.policies.updateExtracted, {
+      await Promise.all([
+        ctx.runMutation(internal.policies.updateExtracted, {
+          policyId: args.policyId,
+          ...applied,
+          status: "ready",
+        }),
+        ctx.runMutation(internal.documentChunks.saveChunks, {
+          policyId: args.policyId,
+          userId: args.userId,
+          chunks: sanitizeNulls(reChunks),
+        }),
+      ]);
+
+      // Extract contacts from re-extracted document
+      const contacts = extractContactsFromDocument(reDoc);
+      for (const c of contacts) {
+        await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
+      }
+
+      // Schedule async embedding of re-extracted chunks
+      ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
         policyId: args.policyId,
-        carrier: applied.carrier || undefined,
-        policyNumber: applied.policyNumber || undefined,
-        effectiveDate: applied.effectiveDate || undefined,
-        expirationDate: applied.expirationDate || undefined,
-        premium: applied.premium || undefined,
-        insuredName: applied.insuredName || undefined,
-        summary: applied.summary || undefined,
-        coverages: applied.coverages || undefined,
-        rawExtracted: applied,
-        category: detectedCategory,
-        policyTypes: applied.policyTypes || undefined,
-        status: "ready",
+        userId: args.userId,
       });
 
-      const summary = buildPolicySummary(applied, detectedCategory);
+      const summary = buildPolicySummary(reDoc);
       await sendBurst(ctx, args.userId, args.phone, [
         "All done — here's the updated breakdown",
         summary,

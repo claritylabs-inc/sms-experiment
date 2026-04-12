@@ -11,7 +11,7 @@ export const create = internalMutation({
       userId: args.userId,
       pdfStorageId: args.pdfStorageId,
       status: "extracting",
-      currentBatch: 0,
+      currentBatchIndex: 0,
       createdAt: Date.now(),
     });
   },
@@ -54,15 +54,13 @@ export const updateFields = internalMutation({
     applicationId: v.id("applications"),
     fields: v.any(),
     answers: v.optional(v.any()),
-    applicationTitle: v.optional(v.string()),
+    title: v.optional(v.string()),
     carrier: v.optional(v.string()),
-    totalBatches: v.optional(v.number()),
     status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { applicationId, ...patch } = args;
-    // Remove undefined values
-    const cleanPatch: Record<string, any> = {};
+    const cleanPatch: Record<string, any> = { updatedAt: Date.now() };
     for (const [k, val] of Object.entries(patch)) {
       if (val !== undefined) cleanPatch[k] = val;
     }
@@ -73,13 +71,16 @@ export const updateFields = internalMutation({
 export const updateAnswers = internalMutation({
   args: {
     applicationId: v.id("applications"),
-    answers: v.any(),
-    currentBatch: v.optional(v.number()),
+    answers: v.optional(v.any()),
+    fields: v.optional(v.any()),
+    currentBatchIndex: v.optional(v.number()),
     status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const patch: Record<string, any> = { answers: args.answers };
-    if (args.currentBatch !== undefined) patch.currentBatch = args.currentBatch;
+    const patch: Record<string, any> = { updatedAt: Date.now() };
+    if (args.answers !== undefined) patch.answers = args.answers;
+    if (args.fields !== undefined) patch.fields = args.fields;
+    if (args.currentBatchIndex !== undefined) patch.currentBatchIndex = args.currentBatchIndex;
     if (args.status !== undefined) patch.status = args.status;
     await ctx.db.patch(args.applicationId, patch);
   },
@@ -95,5 +96,26 @@ export const updateStatus = internalMutation({
     const patch: Record<string, any> = { status: args.status };
     if (args.filledPdfStorageId) patch.filledPdfStorageId = args.filledPdfStorageId;
     await ctx.db.patch(args.applicationId, patch);
+  },
+});
+
+/** Save SDK ApplicationState to the applications table. */
+export const saveState = internalMutation({
+  args: {
+    applicationId: v.id("applications"),
+    fields: v.optional(v.any()),
+    batches: v.optional(v.any()),
+    currentBatchIndex: v.optional(v.number()),
+    title: v.optional(v.string()),
+    applicationType: v.optional(v.string()),
+    status: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { applicationId, ...patch } = args;
+    const cleanPatch: Record<string, any> = { updatedAt: Date.now() };
+    for (const [k, val] of Object.entries(patch)) {
+      if (val !== undefined) cleanPatch[k] = val;
+    }
+    await ctx.db.patch(applicationId, cleanPatch);
   },
 });
