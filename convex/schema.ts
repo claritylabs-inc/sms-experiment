@@ -6,7 +6,7 @@ export default defineSchema({
     phone: v.string(),
     name: v.optional(v.string()),
     email: v.optional(v.string()),
-    state: v.optional(v.string()), // "awaiting_category" | "awaiting_policy" | "awaiting_email" | "awaiting_email_confirm" | "awaiting_insurance_slip" | "awaiting_merge_confirm" | "awaiting_app_questions" | "awaiting_app_confirm" | "active"
+    state: v.optional(v.string()), // "awaiting_category" | "awaiting_policy" | "awaiting_email" | "awaiting_email_confirm" | "awaiting_insurance_slip" | "awaiting_merge_confirm" | "awaiting_clear_confirm" | "awaiting_app_questions" | "awaiting_app_confirm" | "active"
     preferredCategory: v.optional(v.string()),
     uploadToken: v.optional(v.string()),
     linqChatId: v.optional(v.string()), // Linq chat ID for ongoing conversation

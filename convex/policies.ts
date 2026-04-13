@@ -104,6 +104,27 @@ export const remove = internalMutation({
   },
 });
 
+/** Delete all policies for a user, returning the count of deleted policies. */
+export const deleteAllByUser = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const policies = await ctx.db
+      .query("policies")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const policy of policies) {
+      if (policy.pdfStorageId) {
+        await ctx.storage.delete(policy.pdfStorageId);
+      }
+      if (policy.insuranceSlipStorageId) {
+        await ctx.storage.delete(policy.insuranceSlipStorageId);
+      }
+      await ctx.db.delete(policy._id);
+    }
+    return policies.length;
+  },
+});
+
 /** Find existing policies that could match a new upload (for merge detection). */
 export const findMatchingPolicy = internalQuery({
   args: {

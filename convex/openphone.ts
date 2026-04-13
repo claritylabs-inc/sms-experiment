@@ -79,6 +79,12 @@ export const webhook = httpAction(async (ctx, request) => {
       phone: from,
       input: text,
     });
+  } else if (state === "awaiting_clear_confirm") {
+    await ctx.scheduler.runAfter(0, internal.process.handleClearConfirmation, {
+      userId,
+      phone: from,
+      input: text,
+    });
   } else if (state === "awaiting_app_questions") {
     await ctx.scheduler.runAfter(0, internal.process.handleAppQuestions, {
       userId,

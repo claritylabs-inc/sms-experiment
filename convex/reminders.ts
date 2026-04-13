@@ -66,6 +66,21 @@ export const cancelReminder = internalMutation({
   },
 });
 
+export const cancelAllByUser = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const reminders = await ctx.db
+      .query("reminders")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const r of reminders) {
+      if (r.status === "pending") {
+        await ctx.db.patch(r._id, { status: "cancelled" });
+      }
+    }
+  },
+});
+
 export const getByUser = internalQuery({
   args: {
     userId: v.id("users"),

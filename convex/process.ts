@@ -1043,6 +1043,57 @@ export const handleMergeConfirmation = internalAction({
   },
 });
 
+/** Handle yes/no confirmation for /clear command. */
+export const handleClearConfirmation = internalAction({
+  args: {
+    userId: v.id("users"),
+    phone: v.string(),
+    input: v.string(),
+    linqChatId: v.optional(v.string()),
+    imessageSender: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const clean = args.input.toLowerCase().trim();
+
+    const confirmExact = ["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "go", "do it", "go ahead", "sounds good", "please", "y"];
+    const denyExact = ["no", "nah", "nope", "cancel", "nevermind", "never mind", "n"];
+
+    if (confirmExact.some((w) => clean === w)) {
+      const count = await ctx.runMutation(internal.policies.deleteAllByUser, {
+        userId: args.userId,
+      });
+      await ctx.runMutation(internal.reminders.cancelAllByUser, {
+        userId: args.userId,
+      });
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "awaiting_policy",
+      });
+
+      const isImChannel = !!(args.linqChatId || args.imessageSender);
+      const user = await ctx.runQuery(internal.users.get, { userId: args.userId });
+      await sendBurst(ctx, args.userId, args.phone, [
+        `Done — deleted ${count} ${count === 1 ? "policy" : "policies"} and cancelled any reminders.`,
+        isImChannel
+          ? "Send me a new policy PDF or photo whenever you're ready"
+          : `Upload a new policy here: ${process.env.NEXT_PUBLIC_APP_URL || "https://secure.claritylabs.inc"}/upload/${user?.uploadToken}`,
+      ], args.linqChatId, args.imessageSender);
+    } else if (denyExact.some((w) => clean === w)) {
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "active",
+      });
+      await sendAndLog(ctx, args.userId, args.phone,
+        "No worries — your policies are safe. What else can I help with?",
+        args.linqChatId, args.imessageSender);
+    } else {
+      await sendAndLog(ctx, args.userId, args.phone,
+        "Just want to confirm — delete all your policies and start fresh? (yes/no)",
+        args.linqChatId, args.imessageSender);
+    }
+  },
+});
+
 /** Execute the actual PDF merge + re-extraction. */
 export const executePolicyMerge = internalAction({
   args: {
@@ -1793,6 +1844,7 @@ export const handleQuestion = internalAction({
           "/contacts — view your saved contacts",
           "/merge — scan for duplicate policies to merge",
           "/apply — start filling an insurance application",
+          "/clear — delete all your policies and start fresh",
           "/autosend on/off — toggle email send confirmation",
           "/autofill on/off — toggle application fill confirmation",
           "/debug — show current account state",
@@ -1854,6 +1906,31 @@ export const handleQuestion = internalAction({
           contactList,
           "Just mention a name when you want to send something — like \"send proof to John\"",
         ], args.linqChatId, args.imessageSender);
+        return;
+      }
+
+      // /clear command — delete all policies and start fresh (with confirmation)
+      if (clean === "/clear" || clean === "clear my policies" || clean === "delete all policies") {
+        const allPolicies = await ctx.runQuery(internal.policies.getByUser, {
+          userId: args.userId,
+        });
+
+        if (allPolicies.length === 0) {
+          await sendAndLog(ctx, args.userId, args.phone,
+            "You don't have any policies to clear.",
+            args.linqChatId, args.imessageSender);
+          return;
+        }
+
+        const count = allPolicies.length;
+        await ctx.runMutation(internal.users.updateState, {
+          userId: args.userId,
+          state: "awaiting_clear_confirm",
+        });
+
+        await sendAndLog(ctx, args.userId, args.phone,
+          `This will permanently delete ${count === 1 ? "your 1 policy" : `all ${count} of your policies`} and cancel any reminders. Are you sure? (yes/no)`,
+          args.linqChatId, args.imessageSender);
         return;
       }
 
