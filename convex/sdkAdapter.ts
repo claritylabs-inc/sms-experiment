@@ -814,11 +814,100 @@ export function buildDocumentContextFromDocs(
       parts.push(`\nLoss Summary: ${JSON.stringify(doc.lossSummary)}`);
     }
 
+    // Named insureds (with addresses)
+    if (doc.namedInsureds && doc.namedInsureds.length > 0) {
+      parts.push(`\nNamed Insureds:`);
+      for (const ni of doc.namedInsureds) {
+        let line = `  - ${ni.name}`;
+        if (ni.relationship) line += ` (${ni.relationship})`;
+        if (ni.address) {
+          const a = ni.address;
+          line += ` — ${[a.street1, a.city, a.state, a.zip].filter(Boolean).join(", ")}`;
+        }
+        parts.push(line);
+      }
+    }
+
+    // Drivers (auto policies — includes age, marital status, driving record)
+    if (doc.drivers && doc.drivers.length > 0) {
+      parts.push(`\nDrivers:`);
+      for (const d of doc.drivers) {
+        let line = `  - ${d.name}`;
+        if (d.dateOfBirth) line += ` | DOB: ${d.dateOfBirth}`;
+        if (d.gender) line += ` | ${d.gender}`;
+        if (d.maritalStatus) line += ` | ${d.maritalStatus}`;
+        if (d.relationship) line += ` | ${d.relationship}`;
+        if (d.yearsLicensed) line += ` | Licensed ${d.yearsLicensed} yrs`;
+        if (d.goodStudentDiscount) line += ` | Good Student`;
+        if (d.defensiveDriverDiscount) line += ` | Defensive Driver`;
+        parts.push(line);
+        if (d.violations && d.violations.length > 0) {
+          for (const v of d.violations) {
+            parts.push(`      Violation: ${v.description || v.type || "unknown"}${v.date ? ` (${v.date})` : ""}`);
+          }
+        }
+        if (d.accidents && d.accidents.length > 0) {
+          for (const a of d.accidents) {
+            parts.push(`      Accident: ${a.description || "unknown"}${a.date ? ` (${a.date})` : ""}${a.atFault ? " [at-fault]" : ""}`);
+          }
+        }
+      }
+    }
+
+    // Producer/Broker
+    if (doc.producer) {
+      const p = doc.producer;
+      let line = `\nBroker/Agent: ${p.name || p.agencyName || "Unknown"}`;
+      if (p.phone) line += ` | ${p.phone}`;
+      if (p.email) line += ` | ${p.email}`;
+      parts.push(line);
+    }
+
+    // Insurer
+    if (doc.insurer) {
+      const ins = doc.insurer;
+      let line = `Insurer: ${ins.name || "Unknown"}`;
+      if (ins.naic) line += ` (NAIC: ${ins.naic})`;
+      parts.push(line);
+    }
+
     // Additional parties
     if (doc.additionalInsureds && doc.additionalInsureds.length > 0) {
       parts.push(`\nAdditional Insureds:`);
       for (const ai of doc.additionalInsureds) {
         parts.push(`  - ${ai.name} (${ai.role || "additional_insured"})`);
+      }
+    }
+
+    // Loss payees
+    if (doc.lossPayees && doc.lossPayees.length > 0) {
+      parts.push(`\nLoss Payees:`);
+      for (const lp of doc.lossPayees) {
+        parts.push(`  - ${lp.name}${lp.role ? ` (${lp.role})` : ""}`);
+      }
+    }
+
+    // Mortgage holders
+    if (doc.mortgageHolders && doc.mortgageHolders.length > 0) {
+      parts.push(`\nMortgage Holders:`);
+      for (const mh of doc.mortgageHolders) {
+        parts.push(`  - ${mh.name}${mh.role ? ` (${mh.role})` : ""}`);
+      }
+    }
+
+    // Sections (policy text — include summaries for context)
+    if (doc.sections && doc.sections.length > 0) {
+      parts.push(`\nPolicy Sections:`);
+      for (const sec of doc.sections) {
+        let line = `  - ${sec.title}`;
+        if (sec.formNumber) line += ` (${sec.formNumber})`;
+        parts.push(line);
+        if (sec.content) {
+          const content = sec.content.length > 300
+            ? sec.content.slice(0, 300) + "..."
+            : sec.content;
+          parts.push(`    ${content}`);
+        }
       }
     }
 
