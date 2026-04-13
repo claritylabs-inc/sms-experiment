@@ -484,7 +484,7 @@ export function getQueryAgent(ctx: any, userId: any) {
  * Create an application pipeline instance with Convex-backed stores.
  * Call this inside a Convex action handler.
  */
-export function getAppPipeline(ctx: any, userId: any) {
+export function getAppPipeline(ctx: any, userId: any, pdfBase64?: string) {
   const anthropic = createAnthropic();
   const model = anthropic("claude-sonnet-4-6");
   const embedFn = makeEmbedText();
@@ -496,6 +496,7 @@ export function getAppPipeline(ctx: any, userId: any) {
     memoryStore: createConvexMemoryStore(ctx, userId, embedFn),
     concurrency: 4,
     onProgress: (msg) => console.log(`[application] ${msg}`),
+    ...(pdfBase64 ? { providerOptions: { pdfBase64 } } : {}),
   });
 }
 

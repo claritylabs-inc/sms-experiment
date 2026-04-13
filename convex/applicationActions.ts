@@ -33,7 +33,7 @@ export const extractApplicationFields = internalAction({
       const pdfBase64 = Buffer.from(buffer).toString("base64");
 
       // Use SDK application pipeline with full Convex-backed stores
-      const pipeline = getAppPipeline(ctx, args.userId);
+      const pipeline = getAppPipeline(ctx, args.userId, pdfBase64);
       const { state, reviewReport } = await pipeline.processApplication({
         pdfBase64,
         applicationId: args.applicationId as string,
