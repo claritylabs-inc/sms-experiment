@@ -727,6 +727,7 @@ export function buildDocumentContextFromDocs(
       for (const cov of doc.coverages) {
         let line = `  - ${cov.name}`;
         if (cov.limit) line += ` | Limit: ${cov.limit}`;
+        if (cov.limitType) line += ` (${cov.limitType})`;
         if (cov.deductible) line += ` | Deductible: ${cov.deductible}`;
         parts.push(line);
       }
