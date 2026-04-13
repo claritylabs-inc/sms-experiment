@@ -17,6 +17,7 @@ export const add = internalMutation({
   handler: async (ctx, args) => {
     await ctx.db.insert("conversationTurns", {
       userId: args.userId,
+      turnId: args.turnId,
       conversationId: args.conversationId,
       role: args.role,
       content: args.content,

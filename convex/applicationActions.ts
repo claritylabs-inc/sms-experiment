@@ -47,6 +47,7 @@ export const extractApplicationFields = internalAction({
         currentBatchIndex: state.currentBatchIndex,
         title: state.title,
         applicationType: state.applicationType ?? undefined,
+        qualityReport: state.qualityReport ? sanitizeNulls(state.qualityReport) : undefined,
         status: state.status === "complete" ? "ready" : state.status,
         reviewReport: reviewReport ? sanitizeNulls(reviewReport) : undefined,
       });

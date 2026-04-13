@@ -30,7 +30,7 @@ export default defineSchema({
     userId: v.id("users"),
     category: v.string(), // "auto", "renters", "homeowners", "flood", "umbrella", "pet", "travel", "earthquake", "recreational", "farm", "commercial", "other"
     policyTypes: v.optional(v.array(v.string())), // SDK granular types e.g. ["homeowners_ho3"], ["personal_auto"]
-    documentType: v.union(v.literal("policy"), v.literal("quote")),
+    documentType: v.union(v.literal("policy"), v.literal("quote"), v.literal("binder"), v.literal("endorsement"), v.literal("certificate")), // SDK DOCUMENT_TYPES
     carrier: v.optional(v.string()),
     policyNumber: v.optional(v.string()),
     effectiveDate: v.optional(v.string()),
@@ -135,6 +135,7 @@ export default defineSchema({
     title: v.optional(v.string()), // application title
     applicationType: v.optional(v.string()), // detected application type
     carrier: v.optional(v.string()),
+    qualityReport: v.optional(v.any()), // SDK ApplicationState.qualityReport — inline quality data from extraction
     reviewReport: v.optional(v.any()), // CL SDK v0.10 ApplicationQualityReport — quality issues, rounds, gate status
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
@@ -174,7 +175,7 @@ export default defineSchema({
     userId: v.id("users"),
     chunkId: v.string(), // SDK-generated deterministic ID e.g. "doc-123:coverage:2"
     documentId: v.string(), // SDK document ID
-    type: v.string(), // "carrier_info" | "named_insured" | "coverage" | "endorsement" | "exclusion" | "condition" | "section" | "declaration" | "loss_history" | "premium" | "supplementary"
+    type: v.string(), // SDK CHUNK_TYPES: "declarations" | "coverage_form" | "endorsement" | "schedule" | "conditions" | "mixed"
     text: v.string(), // Human-readable text for embedding/search
     metadata: v.optional(v.any()), // Structured metadata for filtering
     embedding: v.optional(v.array(v.float64())), // OpenAI text-embedding-3-small vector
@@ -188,6 +189,7 @@ export default defineSchema({
   // Conversation turns — for query agent context and history search
   conversationTurns: defineTable({
     userId: v.id("users"),
+    turnId: v.optional(v.string()), // SDK ConversationTurn.id — deterministic turn identifier
     conversationId: v.string(), // phone number or session ID
     role: v.string(), // "user" | "assistant" | "tool"
     content: v.string(),

@@ -108,6 +108,7 @@ export const saveState = internalMutation({
     currentBatchIndex: v.optional(v.number()),
     title: v.optional(v.string()),
     applicationType: v.optional(v.string()),
+    qualityReport: v.optional(v.any()),
     reviewReport: v.optional(v.any()),
     status: v.string(),
   },

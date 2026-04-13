@@ -22,7 +22,7 @@ export const create = internalMutation({
   args: {
     userId: v.id("users"),
     category: v.string(),
-    documentType: v.union(v.literal("policy"), v.literal("quote")),
+    documentType: v.union(v.literal("policy"), v.literal("quote"), v.literal("binder"), v.literal("endorsement"), v.literal("certificate")),
     pdfStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
