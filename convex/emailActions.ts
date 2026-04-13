@@ -4,7 +4,6 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getModel, generateTextWithFallback } from "./models";
 import {
-  buildAgentSystemPrompt,
   type InsuranceDocument,
 } from "@claritylabs/cl-sdk";
 import { buildDocumentContextFromDocs } from "./sdkAdapter";

@@ -124,7 +124,6 @@ export async function mergeIntoPdf(
 export async function classifyMediaIntent(
   imageBase64: string,
   userText: string,
-  _anthropicApiKey: string, // kept for backward compat but unused — AI SDK uses ANTHROPIC_API_KEY env var
   mimeType: string = "image/jpeg"
 ): Promise<"document" | "question"> {
   const mediaMime = mimeType.includes("png") ? "image/png" as const : "image/jpeg" as const;

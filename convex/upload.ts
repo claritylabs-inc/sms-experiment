@@ -10,52 +10,7 @@ import {
   isPartialPolicy,
   buildPolicySummary,
 } from "./sdkAdapter";
-
-// Channel-aware send helper for upload notifications
-async function sendNotification(
-  ctx: any,
-  userId: any,
-  phone: string,
-  body: string,
-  linqChatId?: string,
-  imessageSender?: string
-) {
-  let usedChannel = "openphone";
-
-  if (linqChatId) {
-    try {
-      await ctx.runAction(internal.sendLinq.sendLinqMessage, {
-        chatId: linqChatId,
-        body,
-      });
-      usedChannel = "linq";
-    } catch (err) {
-      console.error("Linq send failed in upload, falling back to OpenPhone:", err);
-      await ctx.runAction(internal.send.sendSms, { to: phone, body });
-    }
-  } else if (imessageSender) {
-    try {
-      await ctx.runAction(internal.sendBridge.sendBridgeMessage, {
-        to: imessageSender,
-        body,
-      });
-      usedChannel = "imessage-bridge";
-    } catch (err) {
-      console.error("Bridge send failed in upload, falling back to OpenPhone:", err);
-      await ctx.runAction(internal.send.sendSms, { to: phone, body });
-    }
-  } else {
-    await ctx.runAction(internal.send.sendSms, { to: phone, body });
-  }
-
-  await ctx.runMutation(internal.messages.log, {
-    userId,
-    direction: "outbound" as const,
-    body,
-    hasAttachment: false,
-    channel: usedChannel,
-  });
-}
+import { sendAndLog } from "./sendHelpers";
 
 export const processUploadedPolicy = internalAction({
   args: {
@@ -81,7 +36,7 @@ export const processUploadedPolicy = internalAction({
 
       // Ack + SDK extraction in parallel
       const [, extractionResult] = await Promise.all([
-        sendNotification(ctx, args.userId, args.phone, "Got your upload — reading through it now", linqChatId, imessageSender),
+        sendAndLog(ctx, args.userId, args.phone, "Got your upload — reading through it now", linqChatId, imessageSender),
         getExtractor().extract(pdfBase64),
       ]);
 
@@ -90,16 +45,16 @@ export const processUploadedPolicy = internalAction({
       const applied = documentToUpdateFields(document, extractionResult);
       const detectedCategory = applied.category;
       const documentType = document.type;
-      const isQuote = documentType === "quote";
+      const isPolicy = documentType === "policy";
       const partial = isPartialPolicy(document);
 
       // Create policy record
       const finalPolicyId = await ctx.runMutation(internal.policies.create, {
-        userId: args.userId, category: "other", documentType, pdfStorageId: args.storageId,
+        userId: args.userId, category: detectedCategory || "other", documentType, pdfStorageId: args.storageId,
       });
 
       // Check for an existing policy this could be merged into
-      const existingMatch = !isQuote
+      const existingMatch = isPolicy
         ? await ctx.runQuery(internal.policies.findMatchingPolicy, {
             userId: args.userId,
             carrier: applied.carrier || undefined,
@@ -107,6 +62,12 @@ export const processUploadedPolicy = internalAction({
             category: detectedCategory,
           })
         : null;
+
+      // Extract and save contacts from document parties (before branching)
+      const contacts = extractContactsFromDocument(document);
+      for (const c of contacts) {
+        await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
+      }
 
       // If we found a match, offer to merge
       if (existingMatch && existingMatch._id !== finalPolicyId) {
@@ -130,12 +91,6 @@ export const processUploadedPolicy = internalAction({
           }),
         ]);
 
-        // Extract contacts from document
-        const contacts = extractContactsFromDocument(document);
-        for (const c of contacts) {
-          await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
-        }
-
         // Schedule async embedding of chunks
         ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
           policyId: finalPolicyId, userId: args.userId,
@@ -146,12 +101,12 @@ export const processUploadedPolicy = internalAction({
           ? `your ${existingMatch.carrier} policy`
           : `your existing ${detectedCategory} policy`;
         const msg = `Got your upload! Here's what I found:\n\n${summary}\n\nThis looks like it goes with ${matchLabel}. Want me to merge them together? (yes/no)`;
-        await sendNotification(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
+        await sendAndLog(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
         return;
       }
 
       // No merge — standard flow
-      const isSlipEligible = !isQuote &&
+      const isSlipEligible = isPolicy &&
         (detectedCategory === "auto" || detectedCategory === "homeowners");
 
       await Promise.all([
@@ -169,19 +124,17 @@ export const processUploadedPolicy = internalAction({
         }),
       ]);
 
-      // Extract contacts from document
-      const contacts = extractContactsFromDocument(document);
-      for (const c of contacts) {
-        await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
-      }
-
       // Schedule async embedding of chunks
       ctx.scheduler.runAfter(0, internal.process.embedChunksForPolicy, {
         policyId: finalPolicyId, userId: args.userId,
       });
 
       const summary = buildPolicySummary(document);
-      const docLabel = isQuote ? "quote" : "policy";
+      const DOC_LABELS: Record<string, string> = {
+        policy: "policy", quote: "quote", binder: "binder",
+        endorsement: "endorsement", certificate: "certificate",
+      };
+      const docLabel = DOC_LABELS[documentType] || "document";
 
       let closingMsg: string;
       if (partial) {
@@ -193,10 +146,10 @@ export const processUploadedPolicy = internalAction({
       }
 
       const msg = `Got your ${detectedCategory} ${docLabel}! Here's the breakdown:\n\n${summary}\n\n${closingMsg}`;
-      await sendNotification(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
+      await sendAndLog(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
     } catch (error: any) {
       console.error("Upload processing failed:", error);
-      await sendNotification(
+      await sendAndLog(
         ctx,
         args.userId,
         args.phone,

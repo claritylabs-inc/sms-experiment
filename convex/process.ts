@@ -328,8 +328,7 @@ export const processMedia = internalAction({
       });
 
       // Classify: is this a document photo or a contextual question?
-      const apiKey = process.env.ANTHROPIC_API_KEY || "";
-      const intent = await classifyMediaIntent(imageBase64, args.userText || "", apiKey, args.mediaType);
+      const intent = await classifyMediaIntent(imageBase64, args.userText || "", args.mediaType);
 
       if (intent === "document" && canEmbedInPdf(args.mediaType)) {
         // JPEG/PNG document photo → embed in PDF → extraction pipeline
@@ -428,8 +427,7 @@ export const processMultipleMedia = internalAction({
 
         // Classify intent
         const imageBase64 = Buffer.from(d.buffer).toString("base64");
-        const apiKey = process.env.ANTHROPIC_API_KEY || "";
-        const intent = await classifyMediaIntent(imageBase64, args.userText || "", apiKey, d.mimeType);
+        const intent = await classifyMediaIntent(imageBase64, args.userText || "", d.mimeType);
 
         if (intent === "document" && canEmbedInPdf(d.mimeType)) {
           const pdfBase64 = await embedImageInPdf(d.buffer, d.mimeType);
@@ -599,7 +597,7 @@ async function processExtractionPipeline(
 
   const { document: extractedDoc, chunks } = extractionResult;
   const document: any = extractedDoc;
-  const documentType = document.type; // "policy" | "quote"
+  const documentType = document.type; // "policy" | "quote" | "binder" | "endorsement" | "certificate"
   const applied = documentToUpdateFields(document, extractionResult);
   const detectedCategory = applied.category;
 
@@ -608,15 +606,23 @@ async function processExtractionPipeline(
     : Promise.resolve();
 
   // Create policy record + send ack in parallel
-  const docLabel = documentType === "quote" ? "quote" : "policy";
+  const DOC_LABELS: Record<string, string> = {
+    policy: "policy", quote: "quote", binder: "binder",
+    endorsement: "endorsement", certificate: "certificate",
+  };
+  const docLabel = DOC_LABELS[documentType] || "document";
+  const ackMessages: Record<string, string> = {
+    quote: "Looks like a quote — pulling out the details",
+    binder: "Found a binder — pulling out the details",
+    endorsement: "Found an endorsement — reading through the changes",
+    certificate: "Got a certificate of insurance — pulling out the details",
+  };
   const [finalPolicyId] = await Promise.all([
     ctx.runMutation(internal.policies.create, {
-      userId: args.userId, category: "other", documentType, pdfStorageId: args.pdfStorageId,
+      userId: args.userId, category: detectedCategory || "other", documentType, pdfStorageId: args.pdfStorageId,
     }),
     sendAndLog(ctx, args.userId, args.phone,
-      documentType === "quote"
-        ? "Looks like a quote — pulling out the details"
-        : "Found your policy — pulling out coverages and limits",
+      ackMessages[documentType] || "Found your policy — pulling out coverages and limits",
       args.linqChatId, args.imessageSender),
     startTypingIfLinq,
   ]);
@@ -625,11 +631,11 @@ async function processExtractionPipeline(
     ? ctx.runAction(internal.sendLinq.stopTyping, { chatId: args.linqChatId }).catch(() => {})
     : Promise.resolve();
 
-  const isQuote = documentType === "quote";
+  const isPolicy = documentType === "policy";
   const partial = isPartialPolicy(document);
 
-  // Check for an existing policy this could be merged into
-  const existingMatch = !isQuote
+  // Check for an existing policy this could be merged into (only for policies)
+  const existingMatch = isPolicy
     ? await ctx.runQuery(internal.policies.findMatchingPolicy, {
         userId: args.userId,
         carrier: applied.carrier || undefined,
@@ -690,7 +696,7 @@ async function processExtractionPipeline(
   }
 
   // No merge — standard flow
-  const isSlipEligible = !isQuote &&
+  const isSlipEligible = isPolicy &&
     (detectedCategory === "auto" || detectedCategory === "homeowners");
 
   await Promise.all([
@@ -730,7 +736,7 @@ async function processExtractionPipeline(
   }
 
   await sendBurst(ctx, args.userId, args.phone, [
-    `Ok here's what ${isQuote ? "that quote" : "you're covered for"}`,
+    `Ok here's what ${isPolicy ? "you're covered for" : `that ${docLabel} includes`}`,
     summary,
     closingMsg,
   ], args.linqChatId, args.imessageSender);
@@ -742,7 +748,7 @@ async function processExtractionPipeline(
   });
 
   // Schedule proactive health check analysis (2s delay so summary texts arrive first)
-  if (!isQuote && !partial) {
+  if (isPolicy && !partial) {
     ctx.scheduler.runAfter(2000, internal.proactive.analyzePolicy, {
       policyId: finalPolicyId,
       userId: args.userId,
