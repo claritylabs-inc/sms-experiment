@@ -28,48 +28,116 @@ import { internal } from "./_generated/api";
 
 // ── Provider Callback Adapters ──
 
+type ExtractionImage = { imageBase64: string; mimeType: string };
+type ExtractionProviderOptions = Record<string, unknown> & {
+  pdfBase64?: string;
+  images?: ExtractionImage[];
+};
+
+const SECTIONS_EXTRACTOR_PROMPT_MARKER =
+  "Extract ALL sections, clauses, endorsements, and schedules from this document";
+
+/**
+ * Build the prompt input, attaching the PDF or images as multimodal content
+ * when the SDK passes them via providerOptions.
+ */
+function buildPromptInput(
+  prompt: string,
+  providerOptions?: Record<string, unknown>,
+) {
+  const options = providerOptions as ExtractionProviderOptions | undefined;
+  const pdfBase64 = options?.pdfBase64;
+  const images = options?.images;
+
+  if (images?.length) {
+    return {
+      messages: [
+        {
+          role: "user" as const,
+          content: [
+            ...images.map((img: ExtractionImage) => ({
+              type: "image" as const,
+              image: img.imageBase64,
+              mediaType: img.mimeType,
+            })),
+            { type: "text" as const, text: prompt },
+          ],
+        },
+      ],
+    };
+  }
+
+  if (!pdfBase64) {
+    return { prompt };
+  }
+
+  return {
+    messages: [
+      {
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: prompt },
+          {
+            type: "file" as const,
+            data: pdfBase64,
+            mediaType: "application/pdf",
+            filename: "document.pdf",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function mapUsage(usage?: any) {
+  return usage
+    ? { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 }
+    : undefined;
+}
+
 /** Wrap a Vercel AI SDK LanguageModel into CL SDK's GenerateText callback. */
 export function makeGenerateText(model: any): GenerateText {
-  return async ({ prompt, system, maxTokens }) => {
+  return async ({ prompt, system, maxTokens, providerOptions }) => {
     const { generateText } = await import("ai");
     const result = await generateText({
       model,
-      prompt,
       system,
+      ...buildPromptInput(prompt, providerOptions),
       maxOutputTokens: maxTokens,
+      providerOptions: providerOptions as any,
     });
     return {
       text: result.text,
-      usage: result.usage
-        ? {
-            inputTokens: result.usage.inputTokens ?? 0,
-            outputTokens: result.usage.outputTokens ?? 0,
-          }
-        : undefined,
+      usage: mapUsage(result.usage),
     };
   };
 }
 
 /** Wrap a Vercel AI SDK LanguageModel into CL SDK's GenerateObject callback. */
 export function makeGenerateObject(model: any): GenerateObject {
-  return async ({ prompt, system, schema, maxTokens }) => {
-    const { generateObject } = await import("ai");
-    const result = await generateObject({
-      model,
-      prompt,
-      system,
-      schema,
-      maxOutputTokens: maxTokens,
-    });
-    return {
-      object: result.object,
-      usage: result.usage
-        ? {
-            inputTokens: result.usage.inputTokens ?? 0,
-            outputTokens: result.usage.outputTokens ?? 0,
-          }
-        : undefined,
-    };
+  return async ({ prompt, system, schema, maxTokens, providerOptions }) => {
+    const { generateText, Output } = await import("ai");
+    try {
+      const result = await generateText({
+        model,
+        system,
+        ...buildPromptInput(prompt, providerOptions),
+        output: Output.object({ schema }),
+        maxOutputTokens: maxTokens,
+        providerOptions: providerOptions as any,
+      });
+      return {
+        object: result.output!,
+        usage: mapUsage(result.usage),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Sections extractor can return empty on short documents — gracefully handle
+      if (prompt.includes(SECTIONS_EXTRACTOR_PROMPT_MARKER) && message.includes("No output generated")) {
+        return { object: { sections: [] } as unknown, usage: undefined };
+      }
+      throw error;
+    }
   };
 }
 
