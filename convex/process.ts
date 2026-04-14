@@ -2546,6 +2546,7 @@ Proactive awareness:
       // Track tool side effects
       let pendingEmailCreated = false;
       let emailRequested = false;
+      let pendingFiremarkLink: string | null = null;
       const usedToolNames = new Set<string>();
 
       // Also include pending email context if there's one awaiting confirmation
@@ -2866,7 +2867,7 @@ Proactive awareness:
           }),
 
           generate_firemark: tool({
-            description: "Generate a firemark page for a policy — a personal, visual summary page the user can save or bookmark. Shows carrier, key details, coverages, and summary. Use when the user asks for a summary page, firemark, policy card, or wants to see their policy details on the web.",
+            description: "Generate a firemark page for a policy — a personal, visual summary page the user can save or bookmark. Shows carrier, key details, coverages, and summary. Use when the user asks for a summary page, firemark, policy card, or wants to see their policy details on the web. The link will be sent automatically after your reply — just acknowledge it in your text.",
             inputSchema: z.object({
               policyId: z.string().optional().describe("Policy ID. If omitted, uses the most recent ready policy."),
             }),
@@ -2884,10 +2885,9 @@ Proactive awareness:
                   policyId: targetPolicyId as any,
                 });
                 const link = getFiremarkLink(token);
-                await sendAndLog(ctx, args.userId, args.phone,
-                  `Here's your firemark:\n${link}`,
-                  args.linqChatId, args.imessageSender);
-                return { success: true, message: "Firemark link sent. Don't repeat the link — just let the user know it's been sent." };
+                // Store the link to send AFTER the agent's text reply
+                pendingFiremarkLink = link;
+                return { success: true, message: "Firemark generated. The link will be sent right after your reply — just acknowledge it naturally." };
               } catch (err: any) {
                 console.error("generate_firemark tool error:", err);
                 return { success: false, message: `Failed to generate firemark: ${err.message || "unknown error"}` };
@@ -3069,6 +3069,12 @@ Proactive awareness:
       if (replyText) {
         const reply = isImChannel ? replyText : replyText.slice(0, 1550);
         await sendAndLog(ctx, args.userId, args.phone, reply, args.linqChatId, args.imessageSender);
+
+        // Send firemark link after the agent's text reply so it appears in the right order
+        if (pendingFiremarkLink) {
+          await sendAndLog(ctx, args.userId, args.phone, pendingFiremarkLink, args.linqChatId, args.imessageSender);
+        }
+
         const citedPolicyIds = [...new Set(
           usedToolNames.has("lookup_policy_section")
             ? retrievedPolicyIds

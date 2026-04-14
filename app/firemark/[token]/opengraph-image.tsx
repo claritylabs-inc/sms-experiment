@@ -89,7 +89,7 @@ export default async function FiremarkOgImage({
           display: "flex",
           flexDirection: "column",
           backgroundColor: CARD_BG,
-          padding: "56px 72px",
+          padding: "72px 72px 56px",
           position: "relative",
           overflow: "hidden",
         }}
