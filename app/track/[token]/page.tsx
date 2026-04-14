@@ -69,6 +69,7 @@ const TOTAL_ESTIMATES: Record<string, number> = {
   extraction: 25,
   "re-extraction": 20,
   reindex: 15,
+  merge: 30,
 };
 
 function TimeEstimate({
@@ -256,6 +257,11 @@ export default function TrackPage() {
     reindex: {
       running: "Rebuilding search index",
       completed: "Reindex complete",
+      failed: "Something went wrong",
+    },
+    merge: {
+      running: "Merging your documents",
+      completed: "Your merged breakdown is ready",
       failed: "Something went wrong",
     },
   };

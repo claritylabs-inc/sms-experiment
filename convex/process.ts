@@ -1175,8 +1175,12 @@ export const executePolicyMerge = internalAction({
         return;
       }
 
+      // Create merge task + send tracking link
+      const task = await ctx.runMutation(internal.tasks.create, { userId: args.userId, type: "merge" });
+      const taskId = task.taskId;
+      const trackLink = getTrackLink(task.token);
       await sendAndLog(ctx, args.userId, args.phone,
-        "Merging those documents now — one sec",
+        `On it — merging those documents now.\n\nWatch the progress: ${trackLink}`,
         args.linqChatId, args.imessageSender);
 
       // Download both PDFs
@@ -1186,6 +1190,9 @@ export const executePolicyMerge = internalAction({
       ]);
 
       if (!newBlob) throw new Error("New document not found in storage");
+
+      // Step: downloading -> completed
+      await ctx.runMutation(internal.tasks.advanceStep, { taskId, stepKey: "downloading" });
 
       let mergedBase64: string;
 
@@ -1209,11 +1216,17 @@ export const executePolicyMerge = internalAction({
       const mergedBlob = new Blob([Buffer.from(mergedBase64, "base64")], { type: "application/pdf" });
       const mergedStorageId = await ctx.storage.store(mergedBlob);
 
+      // Step: merging -> completed
+      await ctx.runMutation(internal.tasks.advanceStep, { taskId, stepKey: "merging" });
+
       // Re-extract from the merged document
       const mergeResult = await getExtractor().extract(mergedBase64);
       const { document: mergedDoc, chunks: mergedChunks } = mergeResult;
       const applied = documentToUpdateFields(mergedDoc, mergeResult);
       const detectedCategory = applied.category;
+
+      // Step: extracting -> completed
+      await ctx.runMutation(internal.tasks.advanceStep, { taskId, stepKey: "extracting" });
 
       // Update the existing policy with merged data, delete the duplicate
       const userPolicies = await ctx.runQuery(internal.policies.getByUser, {
@@ -1259,12 +1272,26 @@ export const executePolicyMerge = internalAction({
       });
 
       const summary = buildPolicySummary(mergedDoc);
-      const label = friendlyCategoryLabel(detectedCategory, applied.policyTypes);
-      await sendBurst(ctx, args.userId, args.phone, [
-        `Done — merged your ${label} documents and re-read the combined policy`,
-        summary,
-        "Ask me anything about your coverage, or type /merge to check for more duplicates",
-      ], args.linqChatId, args.imessageSender);
+
+      // Complete task with result
+      await ctx.runMutation(internal.tasks.complete, {
+        taskId,
+        policyId: args.existingPolicyId,
+        result: {
+          summary,
+          carrier: applied.carrier,
+          category: detectedCategory,
+          documentType: (mergedDoc as any).type,
+          policyNumber: applied.policyNumber,
+          effectiveDate: applied.effectiveDate,
+          expirationDate: applied.expirationDate,
+        },
+      });
+
+      // Send completion notification
+      await sendAndLog(ctx, args.userId, args.phone,
+        `All done — your merged breakdown is ready:\n${trackLink}\n\nAsk me anything about your coverage, or type /merge to check for more duplicates`,
+        args.linqChatId, args.imessageSender);
     } catch (error: any) {
       console.error("Policy merge failed:", error);
       // State already set to active at start — just notify

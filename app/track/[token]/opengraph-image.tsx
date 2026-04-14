@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Spot is reading your document";
+export const alt = "Spot is working on it";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -84,7 +84,7 @@ export default async function OGImage() {
               textAlign: "center",
             }}
           >
-            Reading your document
+            Working on it
           </div>
 
           {/* Subtext */}
@@ -98,7 +98,7 @@ export default async function OGImage() {
               textAlign: "center",
             }}
           >
-            Watch Spot read through your insurance document in real time.
+            Watch Spot work through your insurance documents in real time.
           </div>
 
           {/* Progress steps visual */}

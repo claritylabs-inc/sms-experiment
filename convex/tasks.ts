@@ -24,6 +24,14 @@ export const REINDEX_STEPS = [
   { key: "done", label: "All done" },
 ];
 
+export const MERGE_STEPS = [
+  { key: "downloading", label: "Pulling up both documents" },
+  { key: "merging", label: "Combining into one document" },
+  { key: "extracting", label: "Re-reading the combined policy" },
+  { key: "organizing", label: "Organizing everything" },
+  { key: "done", label: "Here's your updated breakdown" },
+];
+
 function generateToken(): string {
   const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   let token = "";
@@ -47,6 +55,8 @@ export const create = internalMutation({
       stepDefs = RE_EXTRACTION_STEPS;
     } else if (type === "reindex") {
       stepDefs = REINDEX_STEPS;
+    } else if (type === "merge") {
+      stepDefs = MERGE_STEPS;
     } else {
       stepDefs = EXTRACTION_STEPS;
     }
