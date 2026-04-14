@@ -1,5 +1,3 @@
-import { LogoIcon } from "@/components/LogoIcon";
-
 export default function NotFound() {
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background p-8 text-center">
@@ -24,8 +22,7 @@ export default function NotFound() {
           Go to Clarity Labs
         </a>
 
-        <div className="mt-12 flex items-center justify-center gap-1.5 text-xs text-muted-foreground/50">
-          <LogoIcon size={12} color="#9ca3af" />
+        <div className="mt-12 flex items-center justify-center text-xs text-muted-foreground/50">
           <span>Spot from Clarity Labs</span>
         </div>
       </div>

@@ -3,7 +3,7 @@ import { useParams } from "next/navigation";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useState, useCallback } from "react";
-import { LogoIcon } from "@/components/LogoIcon";
+
 import { Upload, CheckCircle, AlertCircle, FileText } from "lucide-react";
 
 type UploadState = "idle" | "uploading" | "processing" | "done" | "error";
@@ -89,9 +89,8 @@ export default function UploadPage() {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center bg-background p-6">
         <div className="w-full max-w-[440px] text-center">
-          <div className="mb-8 flex items-center justify-center gap-2">
-            <LogoIcon size={22} />
-            <span className="font-logo text-lg tracking-wide text-foreground">
+          <div className="mb-8 flex items-center justify-center">
+            <span className="font-logo text-xl tracking-wide text-foreground">
               SPOT
             </span>
           </div>
@@ -110,9 +109,8 @@ export default function UploadPage() {
     <div className="flex min-h-dvh flex-col items-center justify-center bg-background p-6">
       <div className="w-full max-w-[440px]">
         {/* Logo */}
-        <div className="mb-8 flex items-center justify-center gap-2">
-          <LogoIcon size={22} />
-          <span className="font-logo text-lg tracking-wide text-foreground">
+        <div className="mb-8 flex items-center justify-center">
+          <span className="font-logo text-xl tracking-wide text-foreground">
             SPOT
           </span>
         </div>
@@ -233,8 +231,7 @@ export default function UploadPage() {
           Your documents are encrypted and only used to help you understand your
           coverage.
         </p>
-        <div className="mt-6 flex items-center justify-center gap-1.5 text-xs text-muted-foreground/50">
-          <LogoIcon size={12} color="#9ca3af" />
+        <div className="mt-6 flex items-center justify-center text-xs text-muted-foreground/50">
           <span>Spot from Clarity Labs</span>
         </div>
       </div>
