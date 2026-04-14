@@ -69,3 +69,8 @@ export function getUploadLink(uploadToken: string): string {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://spot.claritylabs.inc";
   return `${baseUrl}/app/${uploadToken}`;
 }
+
+export function getTrackLink(token: string): string {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://spot.claritylabs.inc";
+  return `${baseUrl}/track/${token}`;
+}
