@@ -10,7 +10,7 @@ import {
   isPartialPolicy,
   buildPolicySummary,
 } from "./sdkAdapter";
-import { sendAndLog } from "./sendHelpers";
+import { sendAndLog, getTrackLink } from "./sendHelpers";
 
 export const processUploadedPolicy = internalAction({
   args: {
@@ -38,6 +38,11 @@ export const processUploadedPolicy = internalAction({
         return;
       }
 
+      // Create task and send tracking link
+      const task = await ctx.runMutation(internal.tasks.create, { userId: args.userId, type: "extraction" });
+      const trackLink = getTrackLink(task.token);
+      await sendAndLog(ctx, args.userId, args.phone, `Got your upload — I'm on it!\n\nWatch the progress: ${trackLink}`, linqChatId, imessageSender);
+
       // Get the PDF from storage
       const blob = await ctx.storage.get(args.storageId);
       if (!blob) throw new Error("File not found in storage");
@@ -45,11 +50,12 @@ export const processUploadedPolicy = internalAction({
       const buffer = await blob.arrayBuffer();
       const pdfBase64 = Buffer.from(buffer).toString("base64");
 
-      // Ack + SDK extraction in parallel
-      const [, extractionResult] = await Promise.all([
-        sendAndLog(ctx, args.userId, args.phone, "Got your upload — reading through it now. This usually takes about 15-20 seconds", linqChatId, imessageSender),
-        getExtractor().extract(pdfBase64),
-      ]);
+      await ctx.runMutation(internal.tasks.advanceStep, { taskId: task.taskId, stepKey: "receiving" });
+
+      // SDK extraction
+      const extractionResult = await getExtractor().extract(pdfBase64);
+
+      await ctx.runMutation(internal.tasks.advanceStep, { taskId: task.taskId, stepKey: "classifying" });
 
       const { document: extractedDoc, chunks } = extractionResult;
       const document: any = extractedDoc;
@@ -58,6 +64,8 @@ export const processUploadedPolicy = internalAction({
       const documentType = document.type;
       const isPolicy = documentType === "policy";
       const partial = isPartialPolicy(document);
+
+      await ctx.runMutation(internal.tasks.advanceStep, { taskId: task.taskId, stepKey: "extracting" });
 
       // Create policy record
       const finalPolicyId = await ctx.runMutation(internal.policies.create, {
@@ -79,6 +87,8 @@ export const processUploadedPolicy = internalAction({
       for (const c of contacts) {
         await ctx.runMutation(internal.contacts.upsert, { userId: args.userId, ...c });
       }
+
+      const summary = buildPolicySummary(document);
 
       // If we found a match, offer to merge
       if (existingMatch && existingMatch._id !== finalPolicyId) {
@@ -107,11 +117,16 @@ export const processUploadedPolicy = internalAction({
           policyId: finalPolicyId, userId: args.userId,
         });
 
-        const summary = buildPolicySummary(document);
+        await ctx.runMutation(internal.tasks.complete, {
+          taskId: task.taskId,
+          policyId: finalPolicyId,
+          result: { summary, carrier: applied.carrier, category: detectedCategory, documentType, policyNumber: applied.policyNumber, effectiveDate: applied.effectiveDate, expirationDate: applied.expirationDate },
+        });
+
         const matchLabel = existingMatch.carrier
           ? `your ${existingMatch.carrier} policy`
           : `your existing ${detectedCategory} policy`;
-        const msg = `Got your upload! Here's what I found:\n\n${summary}\n\nThis looks like it goes with ${matchLabel}. Want me to merge them together? (yes/no)`;
+        const msg = `Got your upload! Here's what I found:\n\n${summary}\n\nThis looks like it goes with ${matchLabel}. Want me to merge them together? (yes/no)\n\n${trackLink}`;
         await sendAndLog(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
         return;
       }
@@ -140,12 +155,11 @@ export const processUploadedPolicy = internalAction({
         policyId: finalPolicyId, userId: args.userId,
       });
 
-      const summary = buildPolicySummary(document);
-      const DOC_LABELS: Record<string, string> = {
-        policy: "policy", quote: "quote", binder: "binder",
-        endorsement: "endorsement", certificate: "certificate",
-      };
-      const docLabel = DOC_LABELS[documentType] || "document";
+      await ctx.runMutation(internal.tasks.complete, {
+        taskId: task.taskId,
+        policyId: finalPolicyId,
+        result: { summary, carrier: applied.carrier, category: detectedCategory, documentType, policyNumber: applied.policyNumber, effectiveDate: applied.effectiveDate, expirationDate: applied.expirationDate },
+      });
 
       let closingMsg: string;
       if (partial) {
@@ -156,8 +170,7 @@ export const processUploadedPolicy = internalAction({
         closingMsg = "Ask me anything about your coverage.";
       }
 
-      const msg = `Got your ${detectedCategory} ${docLabel}! Here's the breakdown:\n\n${summary}\n\n${closingMsg}`;
-      await sendAndLog(ctx, args.userId, args.phone, msg, linqChatId, imessageSender);
+      await sendAndLog(ctx, args.userId, args.phone, `All done — your breakdown is ready:\n${trackLink}\n\n${closingMsg}`, linqChatId, imessageSender);
     } catch (error: any) {
       console.error("Upload processing failed:", error);
       await sendAndLog(
