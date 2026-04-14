@@ -100,7 +100,7 @@ export default async function FiremarkOgImage({
             top: 0,
             left: 0,
             right: 0,
-            height: 6,
+            height: 16,
             background: `linear-gradient(to right, ${BRAND_BLUE}, ${BRAND_BLUE}88, transparent)`,
             display: "flex",
           }}
@@ -121,8 +121,8 @@ export default async function FiremarkOgImage({
               style={{
                 backgroundColor: `${BRAND_BLUE}26`,
                 borderRadius: 100,
-                padding: "10px 22px",
-                fontSize: 22,
+                padding: "12px 26px",
+                fontSize: 28,
                 fontFamily: BODY_FONT,
                 color: FG,
               }}
@@ -133,8 +133,8 @@ export default async function FiremarkOgImage({
               style={{
                 backgroundColor: BG,
                 borderRadius: 100,
-                padding: "10px 22px",
-                fontSize: 22,
+                padding: "12px 26px",
+                fontSize: 28,
                 fontFamily: BODY_FONT,
                 color: MUTED,
                 textTransform: "capitalize",
@@ -146,7 +146,7 @@ export default async function FiremarkOgImage({
           <div
             style={{
               fontFamily: "Bagel Fat One",
-              fontSize: 26,
+              fontSize: 32,
               color: MUTED,
               letterSpacing: "0.08em",
             }}
@@ -158,7 +158,7 @@ export default async function FiremarkOgImage({
         {/* Carrier name — the hero */}
         <div
           style={{
-            fontSize: policy.carrier && policy.carrier.length > 25 ? 64 : 80,
+            fontSize: policy.carrier && policy.carrier.length > 25 ? 76 : 96,
             fontFamily: "Instrument Serif",
             color: FG,
             lineHeight: 1.1,
@@ -173,7 +173,7 @@ export default async function FiremarkOgImage({
         {policy.insuredName && (
           <div
             style={{
-              fontSize: 28,
+              fontSize: 36,
               fontFamily: BODY_FONT,
               color: MUTED,
               marginBottom: 20,
@@ -198,7 +198,7 @@ export default async function FiremarkOgImage({
               <div key={d.label} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <div
                   style={{
-                    fontSize: 16,
+                    fontSize: 20,
                     fontFamily: BODY_FONT,
                     color: `${MUTED}aa`,
                     textTransform: "uppercase",
@@ -209,7 +209,7 @@ export default async function FiremarkOgImage({
                 </div>
                 <div
                   style={{
-                    fontSize: 28,
+                    fontSize: 36,
                     fontFamily: BODY_FONT,
                     color: FG,
                   }}
