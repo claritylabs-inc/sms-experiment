@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 "use node";
 /**
  * SDK Adapter — bridges Vercel AI SDK to CL SDK v0.10.0's callback-based API.
@@ -24,6 +25,7 @@ import {
   type DocumentFilters,
 } from "@claritylabs/cl-sdk";
 import { internal } from "./_generated/api";
+import { buildChunkSearchText } from "./retrievalUtils";
 
 // ── Provider Callback Adapters ──
 
@@ -31,6 +33,12 @@ type ExtractionImage = { imageBase64: string; mimeType: string };
 type ExtractionProviderOptions = Record<string, unknown> & {
   pdfBase64?: string;
   images?: ExtractionImage[];
+};
+
+type VectorFilterBuilder = {
+  and: (...clauses: unknown[]) => unknown;
+  eq: (field: unknown, value: unknown) => unknown;
+  field: (name: string) => unknown;
 };
 
 const SECTIONS_EXTRACTOR_PROMPT_MARKER =
@@ -240,19 +248,6 @@ export function createConvexDocumentStore(
 
 // ── Convex MemoryStore (vector search over chunks + conversation history) ──
 
-/** Cosine similarity between two vectors. */
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0;
-  let dot = 0, magA = 0, magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
-  }
-  const mag = Math.sqrt(magA) * Math.sqrt(magB);
-  return mag === 0 ? 0 : dot / mag;
-}
-
 export function createConvexMemoryStore(
   ctx: any,
   userId: any,
@@ -263,7 +258,7 @@ export function createConvexMemoryStore(
       for (const chunk of chunks) {
         let embedding: number[] | undefined;
         try {
-          embedding = await embedFn(chunk.text);
+          embedding = await embedFn(buildChunkSearchText(chunk));
         } catch (e) {
           console.warn(`Embedding failed for chunk ${chunk.id}:`, e);
         }
@@ -306,54 +301,58 @@ export function createConvexMemoryStore(
         }));
       }
 
-      // Load all user chunks and compute cosine similarity
-      let allChunks: any[];
-      if (options?.filter?.type) {
-        allChunks = await ctx.runQuery(internal.documentChunks.getByUserAndType, {
-          userId,
-          type: options.filter.type,
+      const results = await ctx.vectorSearch("documentChunks", "by_embedding", {
+        vector: queryEmbedding,
+        limit: Math.max(limit * 3, 15),
+        filter: (q: VectorFilterBuilder) =>
+          q.and(
+            q.eq(q.field("userId"), userId),
+            q.eq(q.field("hasEmbedding"), true),
+          ),
+      });
+
+      const chunks: DocumentChunk[] = [];
+      for (const result of results) {
+        const doc = await ctx.runQuery(internal.documentChunks.get, {
+          id: result._id,
         });
-      } else {
-        allChunks = await ctx.runQuery(internal.documentChunks.getByUser, {
-          userId,
+        if (!doc || !doc.hasEmbedding) continue;
+        if (options?.filter?.type && doc.type !== options.filter.type) continue;
+        if (options?.filter?.documentId && doc.documentId !== options.filter.documentId) continue;
+
+        chunks.push({
+          id: doc.chunkId,
+          documentId: doc.documentId,
+          type: doc.type,
+          text: doc.text,
+          metadata: doc.metadata || {},
         });
+        if (chunks.length >= limit) break;
       }
 
-      // Apply additional filters
-      if (options?.filter?.documentId) {
-        allChunks = allChunks.filter((c: any) => c.documentId === options.filter!.documentId);
+      if (chunks.length >= limit) return chunks;
+
+      const textMatches = await ctx.runQuery(internal.documentChunks.searchByText, {
+        userId,
+        query,
+        type: options?.filter?.type,
+      });
+
+      const seen = new Set(chunks.map((chunk) => chunk.id));
+      for (const doc of textMatches) {
+        if (seen.has(doc.chunkId)) continue;
+        if (options?.filter?.documentId && doc.documentId !== options.filter.documentId) continue;
+        chunks.push({
+          id: doc.chunkId,
+          documentId: doc.documentId,
+          type: doc.type,
+          text: doc.text,
+          metadata: doc.metadata || {},
+        });
+        if (chunks.length >= limit) break;
       }
 
-      // Score and rank by cosine similarity
-      const scored = allChunks
-        .filter((c: any) => c.embedding && c.embedding.length > 0)
-        .map((c: any) => ({
-          chunk: c,
-          score: cosineSimilarity(queryEmbedding, c.embedding),
-        }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
-
-      // If not enough embedded chunks, supplement with text matches
-      if (scored.length < limit) {
-        const embeddedIds = new Set(scored.map((s) => s.chunk.chunkId));
-        const textMatches = allChunks
-          .filter((c: any) => !embeddedIds.has(c.chunkId))
-          .filter((c: any) => c.text.toLowerCase().includes(query.toLowerCase().slice(0, 50)))
-          .slice(0, limit - scored.length);
-
-        for (const c of textMatches) {
-          scored.push({ chunk: c, score: 0.3 });
-        }
-      }
-
-      return scored.map((s) => ({
-        id: s.chunk.chunkId,
-        documentId: s.chunk.documentId,
-        type: s.chunk.type,
-        text: s.chunk.text,
-        metadata: s.chunk.metadata || {},
-      }));
+      return chunks;
     },
 
     async addTurn(turn: ConversationTurn): Promise<void> {
@@ -416,24 +415,37 @@ export function createConvexMemoryStore(
       } catch (_) {}
 
       if (queryEmbedding) {
-        const scored = turns
-          .filter((t: any) => t.embedding && t.embedding.length > 0)
-          .map((t: any) => ({
-            turn: t,
-            score: cosineSimilarity(queryEmbedding!, t.embedding),
-          }))
-          .sort((a: any, b: any) => b.score - a.score)
-          .slice(0, 10);
+        const results = await ctx.vectorSearch("conversationTurns", "by_embedding", {
+          vector: queryEmbedding,
+          limit: 25,
+          filter: (q: VectorFilterBuilder) =>
+            q.and(
+              q.eq(q.field("userId"), userId),
+              q.eq(q.field("hasEmbedding"), true),
+            ),
+        });
 
-        return scored.map((s: any) => ({
-          id: s.turn._id,
-          conversationId: s.turn.conversationId,
-          role: s.turn.role,
-          content: s.turn.content,
-          toolName: s.turn.toolName,
-          toolResult: s.turn.toolResult,
-          timestamp: s.turn.timestamp,
-        }));
+        const rankedTurns: ConversationTurn[] = [];
+        for (const result of results) {
+          const doc = await ctx.runQuery(internal.conversationTurns.get, {
+            id: result._id,
+          });
+          if (!doc || !doc.hasEmbedding) continue;
+          if (conversationId && doc.conversationId !== conversationId) continue;
+
+          rankedTurns.push({
+            id: doc._id,
+            conversationId: doc.conversationId,
+            role: doc.role,
+            content: doc.content,
+            toolName: doc.toolName,
+            toolResult: doc.toolResult,
+            timestamp: doc.timestamp,
+          });
+          if (rankedTurns.length >= 10) break;
+        }
+
+        if (rankedTurns.length > 0) return rankedTurns;
       }
 
       // Fallback: text match
