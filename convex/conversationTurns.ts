@@ -1,6 +1,12 @@
 import { internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 
+const EMBEDDING_DIMENSIONS = 1536;
+
+function zeroEmbedding() {
+  return Array.from({ length: EMBEDDING_DIMENSIONS }, () => 0);
+}
+
 /** Add a conversation turn (used by MemoryStore.addTurn). */
 export const add = internalMutation({
   args: {
@@ -23,9 +29,18 @@ export const add = internalMutation({
       content: args.content,
       toolName: args.toolName,
       toolResult: args.toolResult,
-      embedding: args.embedding,
+      embedding: args.embedding ?? zeroEmbedding(),
+      hasEmbedding: !!args.embedding && args.embedding.length === EMBEDDING_DIMENSIONS,
       timestamp: args.timestamp,
     });
+  },
+});
+
+/** Get a single conversation turn by ID. */
+export const get = internalQuery({
+  args: { id: v.id("conversationTurns") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.id);
   },
 });
 

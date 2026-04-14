@@ -177,15 +177,29 @@ export default defineSchema({
     chunkId: v.string(), // SDK-generated deterministic ID e.g. "doc-123:coverage:2"
     documentId: v.string(), // SDK document ID
     type: v.string(), // SDK CHUNK_TYPES: "declarations" | "coverage_form" | "endorsement" | "schedule" | "conditions" | "mixed"
+    variant: v.string(), // "focused" | "raw"
+    policyCategory: v.optional(v.string()),
+    title: v.optional(v.string()),
+    formNumber: v.optional(v.string()),
+    coverageType: v.optional(v.string()),
+    sectionPath: v.optional(v.string()),
     text: v.string(), // Human-readable text for embedding/search
+    searchText: v.string(), // retrieval-optimized text used for keyword and vector search
     metadata: v.optional(v.any()), // Structured metadata for filtering
-    embedding: v.optional(v.array(v.float64())), // OpenAI text-embedding-3-small vector
+    embedding: v.array(v.float64()), // OpenAI text-embedding-3-small vector
+    hasEmbedding: v.boolean(),
     createdAt: v.number(),
   })
     .index("by_policy", ["policyId"])
     .index("by_user", ["userId"])
     .index("by_chunk_id", ["chunkId"])
-    .index("by_user_type", ["userId", "type"]),
+    .index("by_user_type", ["userId", "type"])
+    .index("by_user_form_number", ["userId", "formNumber"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 1536,
+      filterFields: ["userId", "hasEmbedding", "policyId", "policyCategory", "variant"],
+    }),
 
   // Conversation turns — for query agent context and history search
   conversationTurns: defineTable({
@@ -196,10 +210,47 @@ export default defineSchema({
     content: v.string(),
     toolName: v.optional(v.string()),
     toolResult: v.optional(v.string()),
-    embedding: v.optional(v.array(v.float64())), // for semantic history search
+    embedding: v.array(v.float64()), // for semantic history search
+    hasEmbedding: v.boolean(),
     timestamp: v.number(),
   })
     .index("by_conversation", ["conversationId"])
+    .index("by_user", ["userId"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 1536,
+      filterFields: ["userId", "hasEmbedding"],
+    }),
+
+  queryCache: defineTable({
+    userId: v.id("users"),
+    queryKey: v.string(),
+    normalizedQuery: v.string(),
+    rewrittenQueries: v.array(v.string()),
+    embedding: v.optional(v.array(v.float64())),
+    retrievalPolicyIds: v.optional(v.array(v.id("policies"))),
+    retrievalChunkIds: v.optional(v.array(v.string())),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user_query", ["userId", "queryKey"]),
+
+  qaEvents: defineTable({
+    userId: v.id("users"),
+    question: v.string(),
+    normalizedQuery: v.string(),
+    rewrittenQueries: v.array(v.string()),
+    retrievedPolicyIds: v.array(v.id("policies")),
+    retrievedChunkIds: v.array(v.string()),
+    citedPolicyIds: v.optional(v.array(v.id("policies"))),
+    citedSections: v.optional(v.array(v.string())),
+    toolCalls: v.optional(v.array(v.string())),
+    usedSmsPostProcess: v.boolean(),
+    responseLength: v.number(),
+    hadFollowUp: v.optional(v.boolean()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
     .index("by_user", ["userId"]),
 
   // Dedup lock table — prevents duplicate webhook processing

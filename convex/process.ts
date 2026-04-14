@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 "use node";
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -19,20 +20,19 @@ import {
   mergeIntoPdf,
 } from "./imageUtils";
 import { generateCoiPdf, buildCoiInput } from "./coiGenerator";
-import { sendAndLog, sendBurst, sleep, getUploadLink, getTrackLink } from "./sendHelpers";
+import { sendAndLog, sendBurst, getUploadLink, getTrackLink } from "./sendHelpers";
 import { buildMemoryContext } from "./memory";
 import {
   getExtractor,
   documentToUpdateFields,
-  detectCategory,
   extractContactsFromDocument,
   isPartialPolicy,
   buildPolicySummary,
   makeEmbedText,
   makeGenerateObject,
-  createConvexMemoryStore,
-  getQueryAgent,
 } from "./sdkAdapter";
+import { retrievePolicyContext, compressSmsReply } from "./retrieval";
+import { buildChunkSearchText } from "./retrievalUtils";
 
 // ── Helpers ──
 // detectCategory, isPartialPolicy, buildPolicySummary are imported from sdkAdapter
@@ -88,6 +88,150 @@ function parseCategoryInput(input: string): string | null {
   if (otherWords.some((w) => clean.includes(w))) return "other";
 
   return null;
+}
+
+type PolicyLookupRecord = {
+  _id: unknown;
+  carrier?: string;
+  category?: string;
+  policyNumber?: string;
+  rawExtracted?: Record<string, unknown> | null;
+  document?: Record<string, unknown> | null;
+};
+
+function lookupPolicySectionsInDocument(policy: PolicyLookupRecord, query: string) {
+  const doc = (policy?.rawExtracted || policy?.document || policy) as {
+    sections?: Array<Record<string, unknown>>;
+    endorsements?: Array<Record<string, unknown>>;
+    conditions?: Array<Record<string, unknown>>;
+    exclusions?: Array<Record<string, unknown>>;
+    declarations?: unknown;
+  };
+  if (!doc) return [];
+
+  const queryLower = query.toLowerCase();
+  const queryWords = queryLower.split(/\s+/).filter((word: string) => word.length > 2);
+
+  const scoreText = (text: string) => {
+    const lower = text.toLowerCase();
+    let score = 0;
+    for (const word of queryWords) {
+      if (lower.includes(word)) score += 1;
+    }
+    if (lower.includes(queryLower)) score += 3;
+    return score;
+  };
+
+  const results: Array<{
+    title: string;
+    type: string;
+    content: string;
+    excerpt: string;
+    score: number;
+    pages?: string;
+    formNumber?: string;
+    sectionPath?: string;
+    coverageType?: string;
+    coverageImpact?: string;
+  }> = [];
+
+  for (const section of doc.sections || []) {
+    const subsectionText = ((section.subsections as Array<Record<string, unknown>> | undefined) || [])
+      .map((sub) => `${String(sub.title || "")} ${String(sub.content || "")}`)
+      .join(" ");
+    const fullText = `${String(section.title || "")} ${String(section.content || "")} ${subsectionText}`;
+    const score = scoreText(fullText);
+    if (score <= 0) continue;
+
+    let fullContent = String(section.content || "");
+    for (const subsection of ((section.subsections as Array<Record<string, unknown>> | undefined) || [])) {
+      fullContent += `\n\n### ${String(subsection.title || "")}`;
+      if (subsection.content) fullContent += `\n${subsection.content}`;
+    }
+
+    results.push({
+      title: String(section.title || "Section"),
+      type: String(section.type || "section"),
+      pages: section.pageStart ? `${section.pageStart}${section.pageEnd ? `-${section.pageEnd}` : ""}` : undefined,
+      content: fullContent.slice(0, 6000),
+      excerpt: fullContent.slice(0, 600),
+      sectionPath: typeof section.path === "string" ? section.path : undefined,
+      coverageType: typeof section.coverageType === "string" ? section.coverageType : undefined,
+      coverageImpact: typeof section.summary === "string" ? section.summary : undefined,
+      score,
+    });
+  }
+
+  for (const endorsement of doc.endorsements || []) {
+    const fullText = [
+      String(endorsement.title || ""),
+      String(endorsement.formNumber || ""),
+      String(endorsement.content || ""),
+      String(endorsement.effectType || ""),
+      String(endorsement.endorsementType || ""),
+    ].filter(Boolean).join(" ");
+    const score = scoreText(fullText);
+    if (score <= 0) continue;
+
+    results.push({
+      title: String(endorsement.title || endorsement.formNumber || "Endorsement"),
+      type: "endorsement",
+      pages: endorsement.pageStart ? `${endorsement.pageStart}` : undefined,
+      content: String(endorsement.content || "").slice(0, 6000),
+      excerpt: String(endorsement.content || "").slice(0, 600),
+      formNumber: typeof endorsement.formNumber === "string" ? endorsement.formNumber : undefined,
+      coverageImpact: typeof endorsement.effectType === "string" ? endorsement.effectType : undefined,
+      score,
+    });
+  }
+
+  for (const condition of doc.conditions || []) {
+    const fullText = `${String(condition.title || "")} ${String(condition.content || "")}`;
+    const score = scoreText(fullText);
+    if (score <= 0) continue;
+
+    results.push({
+      title: String(condition.title || "Condition"),
+      type: "condition",
+      pages: condition.pageNumber ? `${condition.pageNumber}` : undefined,
+      content: String(condition.content || "").slice(0, 4000),
+      excerpt: String(condition.content || "").slice(0, 600),
+      score,
+    });
+  }
+
+  for (const exclusion of doc.exclusions || []) {
+    const fullText = `${String(exclusion.title || exclusion.name || "")} ${String(exclusion.content || "")} ${String(exclusion.description || "")}`;
+    const score = scoreText(fullText);
+    if (score <= 0) continue;
+
+    results.push({
+      title: String(exclusion.title || exclusion.name || "Exclusion"),
+      type: "exclusion",
+      content: String(exclusion.content || exclusion.description || "").slice(0, 4000),
+      excerpt: String(exclusion.content || exclusion.description || "").slice(0, 600),
+      score,
+    });
+  }
+
+  if (doc.declarations) {
+    const declarationText = JSON.stringify(doc.declarations);
+    const score = scoreText(declarationText);
+    if (score > 0) {
+      results.push({
+        title: "Declarations",
+        type: "declarations",
+        content: declarationText.slice(0, 6000),
+        excerpt: declarationText.slice(0, 600),
+        score,
+      });
+    }
+  }
+
+  return results
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(({ score: _score, ...result }) => result);
 }
 
 // sendAndLog, sendBurst, sleep, getUploadLink imported from ./sendHelpers
@@ -532,7 +676,7 @@ export const embedChunksForPolicy = internalAction({
       for (const chunk of chunks) {
         if (chunk.embedding && chunk.embedding.length > 0) continue; // already embedded
         try {
-          const embedding = await embed(chunk.text);
+          const embedding = await embed(chunk.searchText || buildChunkSearchText(chunk, chunk.policyCategory));
           await ctx.runMutation(internal.documentChunks.updateEmbedding, {
             chunkId: chunk.chunkId,
             embedding,
@@ -2238,6 +2382,7 @@ Your name is Spot. You're a chill, helpful insurance assistant that talks like a
 
 Rules:
 - Talk naturally. Short sentences. No corporate speak. You're texting, not writing an email.
+- Be brief by default. Lead with the answer in the first sentence. Usually keep it to 2-4 short paragraphs, and on plain SMS keep it tight unless the user asks for detail.
 - You help people understand their own insurance policies — that's it.
 - Don't sell, recommend, or solicit any insurance products.
 - Don't give financial, investment, or legal advice.
@@ -2245,6 +2390,13 @@ Rules:
 - If someone asks about something outside their policy, keep it light: "That's a bit outside my lane — I'm best at breaking down what's in your policy."
 - Be direct. If the answer is in their policy, just say it. If it's not, say that.
 - Use plain language. If their policy says "comprehensive" explain what that actually means in normal words.
+
+Coverage analysis rules:
+- You already have the policy text and a lookup_policy_section tool. Use them aggressively.
+- NEVER say "I can't confirm without the wording", "I'd need the endorsement text", or anything similar. You have the wording or can fetch it with lookup_policy_section.
+- For coverage questions, look up the exact exclusion, endorsement, condition, or section before answering if the wording matters.
+- If the user asks whether something is covered, check the relevant exclusion language too, not just the coverage grant.
+- Be assertive when the wording is clear. Don't hide the answer behind disclaimers.
 
 Actions you can take:
 - Send emails (proof of insurance, coverage details, COI summaries) to anyone on the user's behalf
@@ -2284,19 +2436,28 @@ Proactive awareness:
       }).join("\n");
 
       const isImChannel = !!(args.linqChatId || args.imessageSender);
-      const maxOutputTokens = isImChannel ? 800 : 400;
+      const maxOutputTokens = isImChannel ? 500 : 220;
 
-      // Use SDK query agent (RAG with vector search) for grounded answers
       let ragContext = "";
+      let normalizedQuery = args.question.toLowerCase();
+      let rewrittenQueries = [args.question];
+      let retrievedPolicyIds: string[] = [];
+      let retrievedChunkIds: string[] = [];
       const imageId = args.imageStorageId || user?.lastImageId;
       const imageMime = args.imageMimeType || user?.lastImageMimeType || "image/jpeg";
       const userContent: any[] = [];
 
       try {
-        const queryAgent = getQueryAgent(ctx, args.userId);
-
-        // Build attachments array (image if present)
-        const attachments: any[] = [];
+        await ctx.runMutation(internal.qaEvents.markFollowUp, {
+          userId: args.userId,
+          question: args.question,
+        });
+        const retrieval = await retrievePolicyContext(ctx, args.userId, readyPolicies as never, args.question);
+        ragContext = retrieval.context;
+        normalizedQuery = retrieval.normalizedQuery;
+        rewrittenQueries = retrieval.rewrittenQueries;
+        retrievedPolicyIds = retrieval.retrievedPolicyIds;
+        retrievedChunkIds = retrieval.retrievedChunkIds;
         if (imageId) {
           try {
             const imageBlob = await ctx.storage.get(imageId);
@@ -2308,32 +2469,11 @@ Proactive awareness:
                 image: imageBase64,
                 mediaType: imageMime,
               });
-              attachments.push({
-                kind: "image",
-                name: "user-photo",
-                mimeType: imageMime,
-                base64: imageBase64,
-              });
             }
           } catch (_) {}
         }
-
-        const queryResult = await queryAgent.query({
-          question: args.question,
-          ...(attachments.length > 0 ? { attachments } : {}),
-        });
-        const qr = queryResult as any;
-        if (qr.answer) {
-          ragContext = `\n\nDOCUMENT INTELLIGENCE (grounded answer from policy data):\n${qr.answer}`;
-          if (qr.citations && qr.citations.length > 0) {
-            const citationNotes = qr.citations
-              .map((c: any) => `[${c.field || c.documentType || "doc"}]: "${c.quote}"`)
-              .join("\n");
-            ragContext += `\n\nRelevant policy excerpts:\n${citationNotes}`;
-          }
-        }
       } catch (sdkErr) {
-        console.warn("SDK query agent failed, continuing with policy index only:", sdkErr);
+        console.warn("Policy context retrieval failed, continuing with policy index only:", sdkErr);
       }
 
       userContent.push({ type: "text", text: args.question });
@@ -2379,8 +2519,8 @@ Proactive awareness:
       // Define tools
       // Track tool side effects
       let pendingEmailCreated = false;
-      let pendingEmailId: any = null;
       let emailRequested = false;
+      const usedToolNames = new Set<string>();
 
       // Also include pending email context if there's one awaiting confirmation
       const pendingEmailCtx = await ctx.runQuery(internal.email.getPendingForUser, { userId: args.userId });
@@ -2430,6 +2570,7 @@ Proactive awareness:
               policyId: z.string().optional().describe("Specific policy ID if user has multiple"),
             }),
             execute: async (input) => {
+              usedToolNames.add("send_email");
               try {
                 if (!user?.email) {
                   return { success: false, reason: "no_email", message: "User doesn't have an email on file. Use request_email to ask for it first." };
@@ -2476,7 +2617,6 @@ Proactive awareness:
                 });
 
                 pendingEmailCreated = true;
-                pendingEmailId = peId;
 
                 if (user.autoSendEmails) {
                   await ctx.runMutation(internal.email.scheduleEmailSend, { pendingEmailId: peId });
@@ -2507,6 +2647,7 @@ Proactive awareness:
               policyId: z.string().optional(),
             }),
             execute: async (input) => {
+              usedToolNames.add("generate_coi");
               try {
                 if (!user?.email) {
                   return { success: false, reason: "no_email", message: "User doesn't have an email on file. Use request_email first." };
@@ -2551,7 +2692,6 @@ Proactive awareness:
                 });
 
                 pendingEmailCreated = true;
-                pendingEmailId = peId;
 
                 if (user.autoSendEmails) {
                   await ctx.runMutation(internal.email.scheduleEmailSend, { pendingEmailId: peId });
@@ -2579,6 +2719,7 @@ Proactive awareness:
               daysBefore: z.number().optional().describe("Days before expiration to send reminder. Default 30."),
             }),
             execute: async (input) => {
+              usedToolNames.add("set_reminder");
               const targetPolicy = input.policyId
                 ? readyPolicies.find((p: any) => p._id === input.policyId)
                 : readyPolicies[0];
@@ -2607,6 +2748,7 @@ Proactive awareness:
               reason: z.string().describe("Why the email is needed — shown to the user"),
             }),
             execute: async (_input) => {
+              usedToolNames.add("request_email");
               // Don't change state here — it will be set after generateText completes
               // This prevents state change from happening mid-tool-use before Claude's text response is sent
               emailRequested = true;
@@ -2620,6 +2762,7 @@ Proactive awareness:
               name: z.string().describe("The name or role to search for (e.g. 'John', 'landlord', 'property manager')"),
             }),
             execute: async (input) => {
+              usedToolNames.add("lookup_contact");
               try {
                 const matches = await ctx.runQuery(internal.contacts.searchByName, {
                   userId: args.userId,
@@ -2642,10 +2785,40 @@ Proactive awareness:
             },
           }),
 
+          lookup_policy_section: tool({
+            description: "Look up exact policy wording for a specific policy. Use this for exclusions, endorsements, conditions, section titles, form numbers, and scenario-specific coverage wording.",
+            inputSchema: z.object({
+              policyId: z.string().describe("Policy ID from the policy index in the system prompt"),
+              query: z.string().describe("What wording to find, e.g. 'water backup exclusion', 'PR650END', 'coinsurance', 'electrical damage'"),
+            }),
+            execute: async (input) => {
+              usedToolNames.add("lookup_policy_section");
+              const targetPolicy = readyPolicies.find((policy: any) => String(policy._id) === input.policyId);
+              if (!targetPolicy) {
+                return { found: false, message: `No policy found for ID ${input.policyId}.` };
+              }
+
+              const results = lookupPolicySectionsInDocument(targetPolicy, input.query);
+              if (results.length === 0) {
+                return {
+                  found: false,
+                  message: `No matching section found for "${input.query}". Try another form number, section title, or related keyword.`,
+                };
+              }
+
+              return {
+                found: true,
+                policyId: input.policyId,
+                matches: results,
+              };
+            },
+          }),
+
           send_upload_link: tool({
             description: "Send the user their upload link so they can add another policy. The link is sent as a separate message. On iMessage, users can also just send the PDF or photo directly in the conversation.",
             inputSchema: z.object({}),
             execute: async () => {
+              usedToolNames.add("send_upload_link");
               try {
                 const link = getUploadLink(args.uploadToken);
                 const isIm = !!(args.linqChatId || args.imessageSender);
@@ -2674,6 +2847,7 @@ Proactive awareness:
               customMessage: z.string().optional().describe("Optional message to include"),
             }),
             execute: async (input) => {
+              usedToolNames.add("send_application");
               try {
                 if (!user?.email) {
                   return { success: false, reason: "no_email", message: "User doesn't have an email on file. Use request_email to ask for it first." };
@@ -2713,7 +2887,6 @@ Proactive awareness:
                 });
 
                 pendingEmailCreated = true;
-                pendingEmailId = peId;
 
                 if (user.autoSendEmails) {
                   await ctx.runMutation(internal.email.scheduleEmailSend, { pendingEmailId: peId });
@@ -2740,6 +2913,7 @@ Proactive awareness:
               policyId: z.string().optional().describe("Policy ID to re-extract. If omitted, re-extracts all policies."),
             }),
             execute: async (input) => {
+              usedToolNames.add("reextract_policy");
               try {
                 let toReextract;
                 if (input.policyId) {
@@ -2790,6 +2964,7 @@ Proactive awareness:
               content: z.string().describe("The memory to save — clear and concise"),
             }),
             execute: async (input) => {
+              usedToolNames.add("save_memory");
               try {
                 await ctx.runMutation(internal.memory.addMemory, {
                   userId: args.userId,
@@ -2804,7 +2979,7 @@ Proactive awareness:
             },
           }),
         },
-        stopWhen: stepCountIs(5),
+        stopWhen: stepCountIs(20),
       });
 
       // Stop typing before sending reply
@@ -2817,7 +2992,8 @@ Proactive awareness:
       }
 
       // Get the final text response
-      const replyText = result.text;
+      const rawReplyText = result.text;
+      const replyText = isImChannel ? rawReplyText : await compressSmsReply(rawReplyText);
 
       // Set state based on what tools were called
       if (emailRequested) {
@@ -2837,6 +3013,27 @@ Proactive awareness:
       if (replyText) {
         const reply = isImChannel ? replyText : replyText.slice(0, 1550);
         await sendAndLog(ctx, args.userId, args.phone, reply, args.linqChatId, args.imessageSender);
+        const citedPolicyIds = [...new Set(
+          usedToolNames.has("lookup_policy_section")
+            ? retrievedPolicyIds
+            : []
+        )];
+        const citedSections = usedToolNames.has("lookup_policy_section")
+          ? ["lookup_policy_section_used"]
+          : undefined;
+        await ctx.runMutation(internal.qaEvents.log, {
+          userId: args.userId,
+          question: args.question,
+          normalizedQuery,
+          rewrittenQueries,
+          retrievedPolicyIds: retrievedPolicyIds as never,
+          retrievedChunkIds,
+          citedPolicyIds: citedPolicyIds.length > 0 ? citedPolicyIds as never : undefined,
+          citedSections,
+          toolCalls: [...usedToolNames],
+          usedSmsPostProcess: !isImChannel && rawReplyText !== replyText,
+          responseLength: reply.length,
+        });
       }
 
     } catch (error: any) {

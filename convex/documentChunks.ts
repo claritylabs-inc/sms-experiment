@@ -1,5 +1,12 @@
 import { internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+import { buildChunkSearchText, extractChunkSearchFields, extractKeywordTerms, keywordScore } from "./retrievalUtils";
+
+const EMBEDDING_DIMENSIONS = 1536;
+
+function zeroEmbedding() {
+  return Array.from({ length: EMBEDDING_DIMENSIONS }, () => 0);
+}
 
 /** Save extraction chunks for a policy. Deletes existing chunks first. */
 export const saveChunks = internalMutation({
@@ -29,14 +36,24 @@ export const saveChunks = internalMutation({
     // Insert new chunks (without embeddings — those get added later by embedChunks action)
     const now = Date.now();
     for (const chunk of args.chunks) {
+      const fields = extractChunkSearchFields(chunk);
       await ctx.db.insert("documentChunks", {
         policyId: args.policyId,
         userId: args.userId,
         chunkId: chunk.id,
         documentId: chunk.documentId,
         type: chunk.type,
+        variant: fields.variant,
+        policyCategory: fields.policyCategory,
+        title: fields.title,
+        formNumber: fields.formNumber,
+        coverageType: fields.coverageType,
+        sectionPath: fields.sectionPath,
         text: chunk.text,
+        searchText: buildChunkSearchText(chunk),
         metadata: chunk.metadata,
+        embedding: zeroEmbedding(),
+        hasEmbedding: false,
         createdAt: now,
       });
     }
@@ -56,6 +73,7 @@ export const saveChunkWithEmbedding = internalMutation({
     embedding: v.optional(v.array(v.float64())),
   },
   handler: async (ctx, args) => {
+    const fields = extractChunkSearchFields(args);
     // Upsert by chunkId — delete existing if found
     const existing = await ctx.db
       .query("documentChunks")
@@ -66,14 +84,22 @@ export const saveChunkWithEmbedding = internalMutation({
     }
 
     await ctx.db.insert("documentChunks", {
-      policyId: args.policyId as any,
+      policyId: args.policyId as never,
       userId: args.userId,
       chunkId: args.chunkId,
       documentId: args.documentId,
       type: args.type,
+      variant: fields.variant,
+      policyCategory: fields.policyCategory,
+      title: fields.title,
+      formNumber: fields.formNumber,
+      coverageType: fields.coverageType,
+      sectionPath: fields.sectionPath,
       text: args.text,
+      searchText: buildChunkSearchText(args),
       metadata: args.metadata,
-      embedding: args.embedding,
+      embedding: args.embedding ?? zeroEmbedding(),
+      hasEmbedding: !!args.embedding && args.embedding.length === EMBEDDING_DIMENSIONS,
       createdAt: Date.now(),
     });
   },
@@ -91,8 +117,34 @@ export const updateEmbedding = internalMutation({
       .withIndex("by_chunk_id", (q) => q.eq("chunkId", args.chunkId))
       .first();
     if (chunk) {
-      await ctx.db.patch(chunk._id, { embedding: args.embedding });
+      await ctx.db.patch(chunk._id, {
+        embedding: args.embedding,
+        hasEmbedding: true,
+      });
     }
+  },
+});
+
+/** Get a single chunk by documentChunks ID. */
+export const get = internalQuery({
+  args: { id: v.id("documentChunks") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.id);
+  },
+});
+
+export const getByChunkIds = internalQuery({
+  args: { chunkIds: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    const results = [];
+    for (const chunkId of args.chunkIds) {
+      const chunk = await ctx.db
+        .query("documentChunks")
+        .withIndex("by_chunk_id", (q) => q.eq("chunkId", chunkId))
+        .first();
+      if (chunk) results.push(chunk);
+    }
+    return results;
   },
 });
 
@@ -172,8 +224,16 @@ export const searchByText = internalQuery({
     }
 
     const queryLower = args.query.toLowerCase();
+    const expandedQueries = [args.query, ...extractKeywordTerms(args.query)];
     return chunks
-      .filter((c: any) => c.text.toLowerCase().includes(queryLower))
+      .map((chunk) => ({
+        chunk,
+        score: keywordScore(chunk.searchText || chunk.text, expandedQueries) +
+          ((chunk.searchText || chunk.text).toLowerCase().includes(queryLower) ? 5 : 0),
+      }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(({ chunk }) => chunk)
       .slice(0, 20);
   },
 });
