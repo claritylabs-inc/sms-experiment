@@ -147,11 +147,45 @@ function ResultCard({
     Boolean
   ) as string[];
 
+  // Parse summary: strip lines already shown in structured fields, extract coverages
+  const parsedSummary = (() => {
+    if (!result.summary) return { premium: null as string | null, coverages: [] as string[], other: [] as string[] };
+    const lines = result.summary.split("\n").map((l) => l.trim()).filter(Boolean);
+    let premium: string | null = null;
+    const coverages: string[] = [];
+    const other: string[] = [];
+    let inCoverages = false;
+    for (const line of lines) {
+      // Skip lines that duplicate structured fields
+      if (line.startsWith("Carrier:")) continue;
+      if (line.startsWith("Policy #:")) continue;
+      if (line.startsWith("Coverage:") && line.includes(" to ")) continue;
+      if (line.startsWith("Premium:")) {
+        premium = line.replace("Premium:", "").trim();
+        continue;
+      }
+      if (line.startsWith("Key coverages:") || line.startsWith("Coverages:")) {
+        inCoverages = true;
+        continue;
+      }
+      if (inCoverages && line.startsWith("- ")) {
+        coverages.push(line.replace(/^- /, ""));
+        continue;
+      }
+      // Any non-list line after coverages section ends it
+      if (inCoverages && !line.startsWith("- ")) {
+        inCoverages = false;
+      }
+      other.push(line);
+    }
+    return { premium, coverages, other };
+  })();
+
   return (
     <div className="rounded-2xl border border-border bg-white p-6">
       {/* Pills */}
       {pills.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2">
+        <div className="mb-5 flex flex-wrap gap-2">
           {pills.map((pill) => (
             <span
               key={pill}
@@ -163,36 +197,62 @@ function ResultCard({
         </div>
       )}
 
-      {/* Policy number + dates */}
-      {(result.policyNumber ||
-        result.effectiveDate ||
-        result.expirationDate) && (
-        <div className="mb-4 space-y-1">
+      {/* Key details grid */}
+      {(result.policyNumber || result.effectiveDate || result.expirationDate || parsedSummary.premium) && (
+        <div className="mb-5 grid grid-cols-2 gap-x-4 gap-y-3">
           {result.policyNumber && (
-            <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">Policy #</span>{" "}
-              {result.policyNumber}
-            </p>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Policy #</p>
+              <p className="text-sm text-foreground">{result.policyNumber}</p>
+            </div>
           )}
           {result.effectiveDate && (
-            <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">Effective</span>{" "}
-              {result.effectiveDate}
-            </p>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Effective</p>
+              <p className="text-sm text-foreground">{result.effectiveDate}</p>
+            </div>
           )}
           {result.expirationDate && (
-            <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">Expires</span>{" "}
-              {result.expirationDate}
-            </p>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Expires</p>
+              <p className="text-sm text-foreground">{result.expirationDate}</p>
+            </div>
+          )}
+          {parsedSummary.premium && (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Premium</p>
+              <p className="text-sm text-foreground">{parsedSummary.premium}</p>
+            </div>
           )}
         </div>
       )}
 
-      {/* Summary */}
-      {result.summary && (
-        <p className="whitespace-pre-line text-[0.95rem] leading-relaxed text-foreground">
-          {result.summary}
+      {/* Coverages list */}
+      {parsedSummary.coverages.length > 0 && (
+        <div className="mb-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">Key coverages</p>
+          <ul className="space-y-1.5">
+            {parsedSummary.coverages.map((coverage, i) => {
+              const match = coverage.match(/^(.+?)(?:\s*\(([^)]+)\))?$/);
+              const name = match?.[1] || coverage;
+              const limit = match?.[2];
+              return (
+                <li key={i} className="flex items-baseline justify-between gap-3 text-sm">
+                  <span className="text-foreground">{name}</span>
+                  {limit && (
+                    <span className="shrink-0 text-muted-foreground">{limit}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* Other summary lines */}
+      {parsedSummary.other.length > 0 && (
+        <p className="text-[0.95rem] leading-relaxed text-muted-foreground">
+          {parsedSummary.other.join("\n")}
         </p>
       )}
     </div>
