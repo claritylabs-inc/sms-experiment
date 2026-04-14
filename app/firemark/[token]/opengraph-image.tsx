@@ -1,7 +1,7 @@
 import { fetchQuery } from "convex/nextjs";
 import { api } from "@/convex/_generated/api";
 import { ImageResponse } from "next/og";
-import { categoryLabel } from "@/app/lib/og";
+import { categoryLabel, loadOgFonts } from "@/app/lib/og";
 
 export const alt = "Firemark — Spot";
 export const size = { width: 1200, height: 630 };
@@ -14,25 +14,7 @@ const MUTED = "#8a8578";
 const CARD_BG = "#ffffff";
 const BRAND_BLUE = "#A0D2FA";
 const BORDER = "#e5e7eb";
-
-async function loadFonts() {
-  const [instrumentSerif, bagel, geist] = await Promise.all([
-    fetch(
-      "https://fonts.gstatic.com/s/instrumentserif/v5/jizBRFtNs2ka5fXjeivQ4LroWlx-2zI.ttf"
-    ).then((r) => r.arrayBuffer()),
-    fetch(
-      "https://fonts.gstatic.com/s/bagelfatone/v2/hYkPPucsQOr5dy02WmQr5Zkd0B4.ttf"
-    ).then((r) => r.arrayBuffer()),
-    fetch(
-      "https://fonts.gstatic.com/s/geist/v1/gyBhhwUxId8gMGYQMKR3pzfaWI_CkQ.ttf"
-    ).then((r) => r.arrayBuffer()),
-  ]);
-  return [
-    { name: "Instrument Serif", data: instrumentSerif, style: "normal" as const, weight: 400 as const },
-    { name: "Bagel Fat One", data: bagel, style: "normal" as const, weight: 400 as const },
-    { name: "Geist", data: geist, style: "normal" as const, weight: 400 as const },
-  ];
-}
+const BODY_FONT = "system-ui, sans-serif";
 
 function renderFallback() {
   return (
@@ -54,7 +36,7 @@ function renderFallback() {
       <div style={{ fontSize: 48, fontFamily: "Instrument Serif", color: FG }}>
         Your policy firemark
       </div>
-      <div style={{ fontSize: 18, fontFamily: "Geist", color: MUTED }}>
+      <div style={{ fontSize: 18, fontFamily: BODY_FONT, color: MUTED }}>
         A plain-English breakdown of your coverage
       </div>
     </div>
@@ -67,7 +49,7 @@ export default async function FiremarkOgImage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
-  const fonts = await loadFonts();
+  const fonts = await loadOgFonts();
 
   let policy: {
     category: string;
@@ -155,7 +137,7 @@ export default async function FiremarkOgImage({
                   borderRadius: 100,
                   padding: "8px 18px",
                   fontSize: 16,
-                  fontFamily: "Geist",
+                  fontFamily: BODY_FONT,
                   color: FG,
                 }}
               >
@@ -167,7 +149,7 @@ export default async function FiremarkOgImage({
                   borderRadius: 100,
                   padding: "8px 18px",
                   fontSize: 16,
-                  fontFamily: "Geist",
+                  fontFamily: BODY_FONT,
                   color: MUTED,
                   textTransform: "capitalize",
                 }}
@@ -206,7 +188,7 @@ export default async function FiremarkOgImage({
             <div
               style={{
                 fontSize: 20,
-                fontFamily: "Geist",
+                fontFamily: BODY_FONT,
                 color: MUTED,
                 marginBottom: 20,
               }}
@@ -231,7 +213,7 @@ export default async function FiremarkOgImage({
                   <div
                     style={{
                       fontSize: 12,
-                      fontFamily: "Geist",
+                      fontFamily: BODY_FONT,
                       color: `${MUTED}aa`,
                       textTransform: "uppercase",
                       letterSpacing: "0.1em",
@@ -242,7 +224,7 @@ export default async function FiremarkOgImage({
                   <div
                     style={{
                       fontSize: 20,
-                      fontFamily: "Geist",
+                      fontFamily: BODY_FONT,
                       color: FG,
                     }}
                   >

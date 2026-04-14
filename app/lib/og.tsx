@@ -34,22 +34,21 @@ type Policy = {
   documentType: string;
 };
 
-async function loadFonts() {
-  const [instrumentSerif, bagel, geist] = await Promise.all([
+// Satori defaults to Inter for sans-serif — no need to load a body font
+const BODY_FONT = "system-ui, sans-serif";
+
+export async function loadOgFonts() {
+  const [instrumentSerif, bagel] = await Promise.all([
     fetch(
       "https://fonts.gstatic.com/s/instrumentserif/v5/jizBRFtNs2ka5fXjeivQ4LroWlx-2zI.ttf"
     ).then((r) => r.arrayBuffer()),
     fetch(
       "https://fonts.gstatic.com/s/bagelfatone/v2/hYkPPucsQOr5dy02WmQr5Zkd0B4.ttf"
     ).then((r) => r.arrayBuffer()),
-    fetch(
-      "https://fonts.gstatic.com/s/geist/v1/gyBhhwUxId8gMGYQMKR3pzfaWI_CkQ.ttf"
-    ).then((r) => r.arrayBuffer()),
   ]);
   return [
     { name: "Instrument Serif", data: instrumentSerif, style: "normal" as const, weight: 400 as const },
     { name: "Bagel Fat One", data: bagel, style: "normal" as const, weight: 400 as const },
-    { name: "Geist", data: geist, style: "normal" as const, weight: 400 as const },
   ];
 }
 
@@ -69,7 +68,7 @@ function PolicyPills({ policies }: { policies: Policy[] }) {
       <div
         style={{
           fontSize: 14,
-          fontFamily: "Geist",
+          fontFamily: BODY_FONT,
           color: MUTED,
           textTransform: "uppercase",
           letterSpacing: "0.1em",
@@ -107,7 +106,7 @@ function PolicyPills({ policies }: { policies: Policy[] }) {
             <span
               style={{
                 fontSize: 18,
-                fontFamily: "Geist",
+                fontFamily: BODY_FONT,
                 color: FG,
               }}
             >
@@ -117,7 +116,7 @@ function PolicyPills({ policies }: { policies: Policy[] }) {
               <span
                 style={{
                   fontSize: 18,
-                  fontFamily: "Geist",
+                  fontFamily: BODY_FONT,
                   color: MUTED,
                 }}
               >
@@ -140,7 +139,7 @@ export async function renderOgImage({
   subtitle?: string;
   policies: Policy[];
 }) {
-  const fonts = await loadFonts();
+  const fonts = await loadOgFonts();
 
   return new ImageResponse(
     (
@@ -191,7 +190,7 @@ export async function renderOgImage({
           <div
             style={{
               fontSize: 22,
-              fontFamily: "Geist",
+              fontFamily: BODY_FONT,
               color: MUTED,
               textAlign: "center",
               maxWidth: 700,
@@ -224,7 +223,7 @@ export async function renderOgImage({
           <span
             style={{
               fontSize: 14,
-              fontFamily: "Geist",
+              fontFamily: BODY_FONT,
               color: `${MUTED}99`,
             }}
           >

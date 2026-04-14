@@ -206,6 +206,9 @@ export const getByFiremarkToken = query({
       .withIndex("by_firemark_token", (q) => q.eq("firemarkToken", args.token))
       .first();
     if (!policy || policy.status !== "ready") return null;
+    const pdfUrl = policy.pdfStorageId
+      ? await ctx.storage.getUrl(policy.pdfStorageId)
+      : null;
     return {
       _id: policy._id,
       category: policy.category,
@@ -219,6 +222,7 @@ export const getByFiremarkToken = query({
       insuredName: policy.insuredName,
       summary: policy.summary,
       coverages: policy.coverages,
+      pdfUrl,
       createdAt: policy.createdAt,
     };
   },

@@ -2,7 +2,7 @@
 import { useParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Shield, Calendar, Hash, DollarSign, User } from "lucide-react";
+import { Calendar, Hash, DollarSign, Download } from "lucide-react";
 
 // ─── Category labels ────────────────────────────────────────────────────────
 
@@ -217,6 +217,21 @@ export default function FiremarkPage() {
           </div>
         </div>
 
+        {/* ── PDF download ── */}
+        {policy.pdfUrl && (
+          <div className="mb-8">
+            <a
+              href={policy.pdfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-white px-6 py-4 text-[0.95rem] font-medium text-foreground transition-colors hover:bg-warm-card"
+            >
+              <Download className="size-4" />
+              Download policy PDF
+            </a>
+          </div>
+        )}
+
         {/* ── Summary ── */}
         {summaryLines.length > 0 && (
           <div className="mb-8">
@@ -261,11 +276,11 @@ export default function FiremarkPage() {
                   className="rounded-2xl border border-border bg-white p-5"
                 >
                   <div className="flex items-baseline justify-between gap-3">
-                    <p className="text-[0.95rem] font-medium text-foreground">
+                    <p className="min-w-0 shrink text-[0.95rem] font-medium text-foreground">
                       {cov.name}
                     </p>
                     {cov.limit && (
-                      <p className="shrink-0 text-sm text-muted-foreground">
+                      <p className="max-w-[50%] shrink-0 truncate text-right text-sm text-muted-foreground">
                         {cov.limit}
                       </p>
                     )}
@@ -276,7 +291,7 @@ export default function FiremarkPage() {
                     </p>
                   )}
                   {cov.description && (
-                    <p className="mt-1 text-sm text-muted-foreground/80">
+                    <p className="mt-1 truncate text-sm text-muted-foreground/80">
                       {cov.description}
                     </p>
                   )}
