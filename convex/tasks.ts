@@ -166,6 +166,39 @@ export const fail = internalMutation({
   },
 });
 
+// Public — used by OG image generation (server-side)
+export const getOgByToken = query({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const task = await ctx.db
+      .query("tasks")
+      .withIndex("by_token", (q) => q.eq("token", token))
+      .unique();
+    if (!task) return null;
+
+    const policies = await ctx.db
+      .query("policies")
+      .withIndex("by_user", (q) => q.eq("userId", task.userId))
+      .collect();
+
+    const user = await ctx.db.get(task.userId);
+
+    return {
+      type: task.type,
+      status: task.status,
+      result: task.result,
+      preferredCategory: user?.preferredCategory,
+      policies: policies
+        .filter((p) => p.status === "ready")
+        .map((p) => ({
+          category: p.category,
+          carrier: p.carrier,
+          documentType: p.documentType,
+        })),
+    };
+  },
+});
+
 // Public query: look up task by token
 export const getByToken = query({
   args: {

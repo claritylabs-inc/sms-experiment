@@ -1,5 +1,14 @@
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, query } from "./_generated/server";
 import { v } from "convex/values";
+
+function generateFiremarkToken(): string {
+  const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+  let token = "";
+  for (let i = 0; i < 24; i++) {
+    token += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return token;
+}
 
 export const getById = internalQuery({
   args: { policyId: v.id("policies") },
@@ -170,6 +179,70 @@ export const findMatchingPolicy = internalQuery({
 
       return false;
     }) ?? null;
+  },
+});
+
+// ── Firemark ────────────────────────────────────────────────────────────────
+
+/** Generate a firemark token for a policy (idempotent — returns existing if present). */
+export const ensureFiremarkToken = internalMutation({
+  args: { policyId: v.id("policies") },
+  handler: async (ctx, args) => {
+    const policy = await ctx.db.get(args.policyId);
+    if (!policy) throw new Error("Policy not found");
+    if (policy.firemarkToken) return policy.firemarkToken;
+    const token = generateFiremarkToken();
+    await ctx.db.patch(args.policyId, { firemarkToken: token });
+    return token;
+  },
+});
+
+/** Public query: fetch policy data for the firemark page by token. */
+export const getByFiremarkToken = query({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    const policy = await ctx.db
+      .query("policies")
+      .withIndex("by_firemark_token", (q) => q.eq("firemarkToken", args.token))
+      .first();
+    if (!policy || policy.status !== "ready") return null;
+    return {
+      _id: policy._id,
+      category: policy.category,
+      policyTypes: policy.policyTypes,
+      documentType: policy.documentType,
+      carrier: policy.carrier,
+      policyNumber: policy.policyNumber,
+      effectiveDate: policy.effectiveDate,
+      expirationDate: policy.expirationDate,
+      premium: policy.premium,
+      insuredName: policy.insuredName,
+      summary: policy.summary,
+      coverages: policy.coverages,
+      createdAt: policy.createdAt,
+    };
+  },
+});
+
+/** Public query: firemark OG data (lighter than full page query). */
+export const getFiremarkOg = query({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    const policy = await ctx.db
+      .query("policies")
+      .withIndex("by_firemark_token", (q) => q.eq("firemarkToken", args.token))
+      .first();
+    if (!policy || policy.status !== "ready") return null;
+    return {
+      category: policy.category,
+      documentType: policy.documentType,
+      carrier: policy.carrier,
+      policyNumber: policy.policyNumber,
+      effectiveDate: policy.effectiveDate,
+      expirationDate: policy.expirationDate,
+      premium: policy.premium,
+      insuredName: policy.insuredName,
+    };
   },
 });
 

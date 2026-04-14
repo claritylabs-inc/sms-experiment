@@ -74,3 +74,8 @@ export function getTrackLink(token: string): string {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://spot.claritylabs.inc";
   return `${baseUrl}/track/${token}`;
 }
+
+export function getFiremarkLink(token: string): string {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://spot.claritylabs.inc";
+  return `${baseUrl}/firemark/${token}`;
+}

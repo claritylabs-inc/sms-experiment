@@ -46,6 +46,34 @@ export const getByUploadToken = query({
   },
 });
 
+// Public — used by OG image generation (server-side)
+export const getOgByUploadToken = query({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_upload_token", (q) => q.eq("uploadToken", args.token))
+      .first();
+    if (!user) return null;
+
+    const policies = await ctx.db
+      .query("policies")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+
+    return {
+      preferredCategory: user.preferredCategory,
+      policies: policies
+        .filter((p) => p.status === "ready")
+        .map((p) => ({
+          category: p.category,
+          carrier: p.carrier,
+          documentType: p.documentType,
+        })),
+    };
+  },
+});
+
 export const create = internalMutation({
   args: { phone: v.string(), name: v.optional(v.string()) },
   handler: async (ctx, args) => {

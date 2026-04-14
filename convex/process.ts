@@ -20,7 +20,7 @@ import {
   mergeIntoPdf,
 } from "./imageUtils";
 import { generateCoiPdf, buildCoiInput } from "./coiGenerator";
-import { sendAndLog, sendBurst, getUploadLink, getTrackLink } from "./sendHelpers";
+import { sendAndLog, sendBurst, getUploadLink, getTrackLink, getFiremarkLink } from "./sendHelpers";
 import { buildMemoryContext } from "./memory";
 import {
   getExtractor,
@@ -676,7 +676,7 @@ export const embedChunksForPolicy = internalAction({
       for (const chunk of chunks) {
         if (chunk.embedding && chunk.embedding.length > 0) continue; // already embedded
         try {
-          const embedding = await embed(chunk.searchText || buildChunkSearchText(chunk, chunk.policyCategory));
+          const embedding = await embed(chunk.searchText || buildChunkSearchText(chunk as { type: string; text: string; metadata?: any }, chunk.policyCategory));
           await ctx.runMutation(internal.documentChunks.updateEmbedding, {
             chunkId: chunk.chunkId,
             embedding,
@@ -2071,6 +2071,7 @@ export const handleQuestion = internalAction({
           "Here's what I can do:",
           "",
           "/help — show this list",
+          "/firemark — get a visual summary page for your policy",
           "/contacts — view your saved contacts",
           "/merge — scan for duplicate policies to merge",
           "/reindex — re-chunk and re-embed all policies (improves search)",
@@ -2112,6 +2113,34 @@ export const handleQuestion = internalAction({
             `Upload your application PDF here and I'll help you fill it out:\n\n${link}`,
             args.linqChatId, args.imessageSender);
         }
+        return;
+      }
+
+      // /firemark command — generate a visual policy summary page
+      if (clean === "/firemark" || clean === "firemark") {
+        const readyPolicies = (await ctx.runQuery(internal.policies.getByUser, {
+          userId: args.userId,
+        })).filter((p) => p.status === "ready");
+
+        if (readyPolicies.length === 0) {
+          await sendAndLog(ctx, args.userId, args.phone,
+            "You don't have any policies on file yet. Send me a policy PDF first",
+            args.linqChatId, args.imessageSender);
+          return;
+        }
+
+        // Generate firemark for the most recent ready policy
+        const policy = readyPolicies[readyPolicies.length - 1];
+        const token = await ctx.runMutation(internal.policies.ensureFiremarkToken, {
+          policyId: policy._id,
+        });
+        const link = getFiremarkLink(token);
+        const label = policy.carrier
+          ? `${policy.carrier} ${policy.category}`
+          : policy.category;
+        await sendAndLog(ctx, args.userId, args.phone,
+          `Here's your ${label} firemark:\n${link}`,
+          args.linqChatId, args.imessageSender);
         return;
       }
 
@@ -2251,11 +2280,8 @@ export const handleQuestion = internalAction({
           return;
         }
 
-        await sendAndLog(ctx, args.userId, args.phone,
-          `Reindexing ${readyPolicies.length} ${readyPolicies.length === 1 ? "policy" : "policies"} — this may take a moment`,
-          args.linqChatId, args.imessageSender);
-
-        ctx.scheduler.runAfter(0, internal.process.reindexPolicies, {
+        // Don't send a message here — reindexPolicies sends the tracking link
+        await ctx.scheduler.runAfter(0, internal.process.reindexPolicies, {
           userId: args.userId,
           phone: args.phone,
           linqChatId: args.linqChatId,
@@ -2839,6 +2865,36 @@ Proactive awareness:
             },
           }),
 
+          generate_firemark: tool({
+            description: "Generate a firemark page for a policy — a personal, visual summary page the user can save or bookmark. Shows carrier, key details, coverages, and summary. Use when the user asks for a summary page, firemark, policy card, or wants to see their policy details on the web.",
+            inputSchema: z.object({
+              policyId: z.string().optional().describe("Policy ID. If omitted, uses the most recent ready policy."),
+            }),
+            execute: async (input) => {
+              usedToolNames.add("generate_firemark");
+              try {
+                let targetPolicyId = input.policyId;
+                if (!targetPolicyId) {
+                  const firstReady = readyPolicies[0];
+                  if (!firstReady) return { success: false, message: "No ready policies found." };
+                  targetPolicyId = firstReady._id;
+                }
+
+                const token = await ctx.runMutation(internal.policies.ensureFiremarkToken, {
+                  policyId: targetPolicyId as any,
+                });
+                const link = getFiremarkLink(token);
+                await sendAndLog(ctx, args.userId, args.phone,
+                  `Here's your firemark:\n${link}`,
+                  args.linqChatId, args.imessageSender);
+                return { success: true, message: "Firemark link sent. Don't repeat the link — just let the user know it's been sent." };
+              } catch (err: any) {
+                console.error("generate_firemark tool error:", err);
+                return { success: false, message: `Failed to generate firemark: ${err.message || "unknown error"}` };
+              }
+            },
+          }),
+
           send_application: tool({
             description: "Email a filled insurance application to someone. Use when the user asks to send/email their completed application. Only works if there's a completed application (status: ready).",
             inputSchema: z.object({
@@ -3196,14 +3252,24 @@ export const reindexPolicies = internalAction({
         return;
       }
 
-      // Create task and send tracking link
+      // Create task but only send tracking link if work takes > 5s
       const task = await ctx.runMutation(internal.tasks.create, { userId: args.userId, type: "reindex" });
       const taskId = task.taskId;
       const taskToken = task.token;
       const trackLink = getTrackLink(taskToken);
+
       await sendAndLog(ctx, args.userId, args.phone,
-        `Reindexing ${readyPolicies.length} ${readyPolicies.length === 1 ? "policy" : "policies"} now.\n\nTrack progress online: ${trackLink}`,
+        `Reindexing ${readyPolicies.length} ${readyPolicies.length === 1 ? "policy" : "policies"} now`,
         args.linqChatId, args.imessageSender);
+
+      // Send tracking link after 5s only if still running
+      let trackLinkSent = false;
+      const trackLinkTimeout = setTimeout(() => {
+        trackLinkSent = true;
+        sendAndLog(ctx, args.userId, args.phone,
+          `Track progress online: ${trackLink}`,
+          args.linqChatId, args.imessageSender);
+      }, 5000);
 
       const ensureArray = (val: any) => Array.isArray(val) ? val : [];
       let rechunked = 0;
@@ -3263,6 +3329,9 @@ export const reindexPolicies = internalAction({
         }
       }
 
+      // Cancel tracking link if work finished before 5s
+      clearTimeout(trackLinkTimeout);
+
       // Complete task and send done notification
       await ctx.runMutation(internal.tasks.complete, {
         taskId,
@@ -3273,9 +3342,10 @@ export const reindexPolicies = internalAction({
       });
 
       if (errors.length > 0) {
-        await sendAndLog(ctx, args.userId, args.phone,
-          `Reindexed ${rechunked}/${readyPolicies.length} policies. Some had errors — check the progress page for details.`,
-          args.linqChatId, args.imessageSender);
+        const msg = trackLinkSent
+          ? `Reindexed ${rechunked}/${readyPolicies.length} policies. Some had errors — check the progress page for details.`
+          : `Reindexed ${rechunked}/${readyPolicies.length} policies. Some had errors.`;
+        await sendAndLog(ctx, args.userId, args.phone, msg, args.linqChatId, args.imessageSender);
       } else {
         await sendAndLog(ctx, args.userId, args.phone,
           `All done — reindexed ${rechunked} ${rechunked === 1 ? "policy" : "policies"}. Search should be better now.`,

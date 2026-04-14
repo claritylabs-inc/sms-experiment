@@ -46,13 +46,15 @@ export default defineSchema({
     analysis: v.optional(v.any()), // health check: { strengths[], gaps[], exclusionHighlights[], lowLimits[], naturalSummary, generatedAt }
     extractionReport: v.optional(v.any()), // CL SDK v0.10 ExtractionReviewReport — review rounds, form inventory, quality gate status
     extractionUsage: v.optional(v.any()), // CL SDK v0.10 { tokenUsage, usageReporting: { modelCalls, callsWithUsage, callsMissingUsage } }
+    firemarkToken: v.optional(v.string()), // random token for firemark page URL
     status: v.union(
       v.literal("processing"),
       v.literal("ready"),
       v.literal("failed")
     ),
     createdAt: v.number(),
-  }).index("by_user", ["userId"]),
+  }).index("by_user", ["userId"])
+    .index("by_firemark_token", ["firemarkToken"]),
 
   messages: defineTable({
     userId: v.id("users"),
@@ -175,19 +177,19 @@ export default defineSchema({
     policyId: v.id("policies"),
     userId: v.id("users"),
     chunkId: v.string(), // SDK-generated deterministic ID e.g. "doc-123:coverage:2"
-    documentId: v.string(), // SDK document ID
-    type: v.string(), // SDK CHUNK_TYPES: "declarations" | "coverage_form" | "endorsement" | "schedule" | "conditions" | "mixed"
-    variant: v.string(), // "focused" | "raw"
+    documentId: v.optional(v.string()), // SDK document ID (optional for legacy chunks)
+    type: v.optional(v.string()), // SDK CHUNK_TYPES: "declarations" | "coverage_form" | "endorsement" | "schedule" | "conditions" | "mixed"
+    variant: v.optional(v.string()), // "focused" | "raw" (optional for legacy chunks)
     policyCategory: v.optional(v.string()),
     title: v.optional(v.string()),
     formNumber: v.optional(v.string()),
     coverageType: v.optional(v.string()),
     sectionPath: v.optional(v.string()),
     text: v.string(), // Human-readable text for embedding/search
-    searchText: v.string(), // retrieval-optimized text used for keyword and vector search
+    searchText: v.optional(v.string()), // retrieval-optimized text used for keyword and vector search
     metadata: v.optional(v.any()), // Structured metadata for filtering
-    embedding: v.array(v.float64()), // OpenAI text-embedding-3-small vector
-    hasEmbedding: v.boolean(),
+    embedding: v.optional(v.array(v.float64())), // OpenAI text-embedding-3-small vector (optional for legacy chunks awaiting embedding)
+    hasEmbedding: v.optional(v.boolean()),
     createdAt: v.number(),
   })
     .index("by_policy", ["policyId"])
@@ -211,7 +213,7 @@ export default defineSchema({
     toolName: v.optional(v.string()),
     toolResult: v.optional(v.string()),
     embedding: v.array(v.float64()), // for semantic history search
-    hasEmbedding: v.boolean(),
+    hasEmbedding: v.optional(v.boolean()),
     timestamp: v.number(),
   })
     .index("by_conversation", ["conversationId"])
