@@ -1236,9 +1236,9 @@ async function processExtractionPipeline(
       : `your existing ${CATEGORY_LABELS[existingMatch.category] || existingMatch.category} policy`;
 
     await sendBurst(ctx, args.userId, args.phone, [
-      `Got it — here's what I found`,
+      `ok got it`,
       summary,
-      `This looks like it goes with ${matchLabel}. Want me to merge them together? (yes/no)`,
+      `this looks like the same policy as ${matchLabel} — want me to merge them or keep separate?`,
     ], args.linqChatId, args.imessageSender);
     return;
   }
@@ -1275,11 +1275,11 @@ async function processExtractionPipeline(
 
   let closingMsg: string;
   if (partial) {
-    closingMsg = "Looks like this might be just a declarations page or partial document. If you have the full policy, send it over and I'll combine them for a more complete picture.";
+    closingMsg = "looks like this might just be a declarations page — if you've got the full policy, send it over and i'll combine them";
   } else if (isSlipEligible) {
-    closingMsg = "Do you have an existing insurance slip for this? If so, send it over and I'll save it. Otherwise just say no and I can generate one for you anytime.";
+    closingMsg = "got any existing insurance slips? can send them too or skip";
   } else {
-    closingMsg = "That's the main stuff — ask me anything about it, or I can send proof of insurance / set a reminder for you";
+    closingMsg = "anything you want me to dig into?";
   }
 
   // Complete task and send done notification
@@ -1410,7 +1410,7 @@ export const handleInsuranceSlipResponse = internalAction({
         ctx,
         args.userId,
         args.phone,
-        "No worries — I can generate one for you anytime, just ask! What else can I help with?",
+        "all good — i can generate one anytime, just ask",
         args.linqChatId,
         args.imessageSender
       );
@@ -1425,7 +1425,7 @@ export const handleInsuranceSlipResponse = internalAction({
           ctx,
           args.userId,
           args.phone,
-          "Send it over — just drop the photo or PDF right here",
+          "send it over — drop the photo or pdf in here",
           args.linqChatId,
           args.imessageSender
         );
@@ -1435,7 +1435,7 @@ export const handleInsuranceSlipResponse = internalAction({
           ctx,
           args.userId,
           args.phone,
-          `You can upload it here:\n${link}`,
+          `upload it here:\n${link}`,
         );
       }
       return;
@@ -1542,7 +1542,7 @@ export const processInsuranceSlip = internalAction({
         ctx,
         args.userId,
         args.phone,
-        `Got it — saved your ${label} insurance slip. I'll use this instead of generating one. Ask me anything about your coverage!`,
+        `saved your ${label} slip — i'll use this one. anything you want me to dig into?`,
         args.linqChatId,
         args.imessageSender
       );
@@ -1556,7 +1556,7 @@ export const processInsuranceSlip = internalAction({
         ctx,
         args.userId,
         args.phone,
-        "Hmm I had trouble saving that — you can try again later or just ask me to generate one. What else can I help with?",
+        "hmm had trouble saving that — try again later or just ask me to generate one",
         args.linqChatId,
         args.imessageSender
       );
@@ -1661,11 +1661,11 @@ export const handleClearConfirmation = internalAction({
         state: "active",
       });
       await sendAndLog(ctx, args.userId, args.phone,
-        "No worries — your policies are safe. What else can I help with?",
+        "all good — your policies are safe",
         args.linqChatId, args.imessageSender);
     } else {
       await sendAndLog(ctx, args.userId, args.phone,
-        "Just want to confirm — delete all your policies and start fresh? (yes/no)",
+        "just to confirm — delete all your policies and start fresh? (yes/no)",
         args.linqChatId, args.imessageSender);
     }
   },
@@ -1889,7 +1889,7 @@ export const handleEmailConfirmation = internalAction({
         userId: args.userId,
         state: "active",
       });
-      await sendAndLog(ctx, args.userId, args.phone, "Got it — email cancelled before it sent", args.linqChatId, args.imessageSender);
+      await sendAndLog(ctx, args.userId, args.phone, "ok, cancelled before it sent", args.linqChatId, args.imessageSender);
       return;
     }
 
@@ -1901,7 +1901,7 @@ export const handleEmailConfirmation = internalAction({
         userId: args.userId,
         state: "active",
       });
-      await sendAndLog(ctx, args.userId, args.phone, "No worries, cancelled", args.linqChatId, args.imessageSender);
+      await sendAndLog(ctx, args.userId, args.phone, "ok, cancelled", args.linqChatId, args.imessageSender);
       return;
     }
 
@@ -1918,7 +1918,7 @@ export const handleEmailConfirmation = internalAction({
         ctx,
         args.userId,
         args.phone,
-        `Sent! ${pending.recipientName || pending.recipientEmail} should have it shortly`,
+        `sent — ${pending.recipientName || pending.recipientEmail} should have it shortly`,
         args.linqChatId,
         args.imessageSender
       );
@@ -1962,12 +1962,12 @@ export const handleEmailCollection = internalAction({
         if (pending) {
           await ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "awaiting_email_confirm" });
           await sendAndLog(ctx, args.userId, args.phone,
-            `Got it — using ${existingUser.email}. Ready to send to ${pending.recipientEmail}. Reply "send" to confirm.`,
+            `ok using ${existingUser.email}. good to send to ${pending.recipientEmail}? reply send or cancel`,
             args.linqChatId, args.imessageSender);
         } else {
           await ctx.runMutation(internal.users.updateState, { userId: args.userId, state: "active" });
           await sendAndLog(ctx, args.userId, args.phone,
-            `Your email is ${existingUser.email}. What can I help you with?`,
+            `your email's ${existingUser.email}`,
             args.linqChatId, args.imessageSender);
         }
         return;
@@ -1983,7 +1983,7 @@ export const handleEmailCollection = internalAction({
         ctx,
         args.userId,
         args.phone,
-        "I need your email address so I can CC you on emails I send. What's your email?",
+        "what's your email? i'll cc you on anything i send",
         args.linqChatId,
         args.imessageSender
       );
@@ -2016,7 +2016,7 @@ export const handleEmailCollection = internalAction({
         ctx,
         args.userId,
         args.phone,
-        `Got it — ${email}. I have an email ready to send to ${pending.recipientEmail} (${pending.subject}). Want me to send it?`,
+        `ok got ${email}. i've got an email ready for ${pending.recipientEmail} (${pending.subject}) — good to send?`,
         args.linqChatId,
         args.imessageSender
       );
@@ -2029,7 +2029,7 @@ export const handleEmailCollection = internalAction({
         ctx,
         args.userId,
         args.phone,
-        `Got it — ${email}. What can I help you with?`,
+        `ok got ${email}`,
         args.linqChatId,
         args.imessageSender
       );
@@ -2725,7 +2725,7 @@ export const handleQuestion = internalAction({
           await ctx.runMutation(internal.email.cancelPendingEmail, {
             pendingEmailId: pending._id,
           });
-          await sendAndLog(ctx, args.userId, args.phone, "Got it — email cancelled before it sent", args.linqChatId, args.imessageSender);
+          await sendAndLog(ctx, args.userId, args.phone, "ok, cancelled before it sent", args.linqChatId, args.imessageSender);
           return;
         }
       }
@@ -2744,7 +2744,7 @@ export const handleQuestion = internalAction({
         if (processingPolicies.length > 0) {
           // A document is being processed — let user know
           await sendAndLog(ctx, args.userId, args.phone,
-            "I'm still reading through your document — almost done. You can ask me anything once it's ready",
+            "still reading through it — almost done",
             args.linqChatId, args.imessageSender);
           return;
         }
