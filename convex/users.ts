@@ -298,3 +298,10 @@ export const drainMessageBuffer = internalMutation({
     return { text, messageCount: buffered.length };
   },
 });
+
+export const markFirstMessageClassified = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, { hasClassifiedFirstMessage: true });
+  },
+});

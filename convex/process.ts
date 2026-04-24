@@ -263,6 +263,289 @@ export const sendWelcome = internalAction({
   },
 });
 
+/**
+ * Debounce flush: fires 2s after the first inbound in a rapid-fire window.
+ * Drains the user's messageBuffer, runs the first-message classifier if this
+ * is their first ever message, then dispatches to the correct handler based
+ * on state + intent.
+ *
+ * Called by the webhook scheduler; never called directly by webhooks.
+ */
+export const processBufferedTurn = internalAction({
+  args: {
+    userId: v.id("users"),
+    phone: v.string(),
+    uploadToken: v.string(),
+    linqChatId: v.optional(v.string()),
+    imessageSender: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    // Drain the buffer atomically
+    const { text, messageCount }: { text: string; messageCount: number } = await ctx.runMutation(
+      internal.users.drainMessageBuffer,
+      { userId: args.userId }
+    );
+
+    if (!text) {
+      console.warn("[spot:empty_buffer_flush]", { userId: args.userId });
+      return;
+    }
+
+    const user: any = await ctx.runQuery(internal.users.getUser, {
+      userId: args.userId,
+    });
+    if (!user) return;
+
+    // First-message classifier (runs once per user lifetime)
+    if (!user.hasClassifiedFirstMessage) {
+      const { intent, extractedCategory, noteForContext } = await ctx.runAction(
+        internal.intent.classifyFirstMessage,
+        { text }
+      );
+      console.log("[spot:intent]", {
+        userId: args.userId,
+        intent,
+        extractedCategory,
+        messageCount,
+      });
+
+      await ctx.runMutation(internal.users.markFirstMessageClassified, {
+        userId: args.userId,
+      });
+
+      switch (intent) {
+        case "greeting":
+          await ctx.runAction(internal.process.sendWelcome, {
+            userId: args.userId,
+            phone: args.phone,
+            uploadToken: args.uploadToken,
+            linqChatId: args.linqChatId,
+            imessageSender: args.imessageSender,
+          });
+          return;
+
+        case "capability_question":
+          // Send immediate warm opener, then hand off to no-policy chat
+          if (args.linqChatId) {
+            await ctx.runAction(internal.sendLinq.sendLinqMessage, {
+              chatId: args.linqChatId,
+              body: "hey!",
+            }).catch(() => {});
+          }
+          await ctx.runMutation(internal.users.updateState, {
+            userId: args.userId,
+            state: "no_policy_chat",
+          });
+          await ctx.runAction(internal.noPolicyChat.handleNoPolicyChat, {
+            userId: args.userId,
+            phone: args.phone,
+            input: text,
+            linqChatId: args.linqChatId,
+            imessageSender: args.imessageSender,
+            seedContext: `user just asked what spot does — clarify briefly that you read policies (not sell them) then start discovery about who they are. their exact words: "${text}"`,
+          });
+          return;
+
+        case "has_policy":
+          // Skip category question, jump to awaiting_policy with pre-filled category if present
+          await ctx.runMutation(internal.users.updateState, {
+            userId: args.userId,
+            state: "awaiting_policy",
+            preferredCategory: extractedCategory || undefined,
+          });
+          await sendBurst(
+            ctx,
+            args.userId,
+            args.phone,
+            [
+              extractedCategory ? `${extractedCategory}, cool` : "ok cool",
+              "drop the pdf or a photo in here",
+            ],
+            args.linqChatId,
+            args.imessageSender
+          );
+          return;
+
+        case "no_policy_yet":
+          await ctx.runMutation(internal.users.updateState, {
+            userId: args.userId,
+            state: "no_policy_chat",
+          });
+          await ctx.runAction(internal.noPolicyChat.handleNoPolicyChat, {
+            userId: args.userId,
+            phone: args.phone,
+            input: text,
+            linqChatId: args.linqChatId,
+            imessageSender: args.imessageSender,
+            seedContext: `user said they don't have a policy yet. their exact words: "${text}". start discovery — learn who they are, what they're building.`,
+          });
+          return;
+
+        case "wrong_number":
+          await sendBurst(
+            ctx,
+            args.userId,
+            args.phone,
+            [
+              "hey, this is spot — an insurance-policy reader",
+              "if you didn't mean to text me, no problem, just ignore",
+            ],
+            args.linqChatId,
+            args.imessageSender
+          );
+          return;
+
+        case "unclear":
+        default:
+          // Route to no-policy chat with the raw text as seed
+          await ctx.runMutation(internal.users.updateState, {
+            userId: args.userId,
+            state: "no_policy_chat",
+          });
+          await ctx.runAction(internal.noPolicyChat.handleNoPolicyChat, {
+            userId: args.userId,
+            phone: args.phone,
+            input: text,
+            linqChatId: args.linqChatId,
+            imessageSender: args.imessageSender,
+            seedContext: `first message was ambiguous. their exact words: "${text}". clarify that spot reads insurance policies (not sells them) and figure out what they need.`,
+          });
+          return;
+      }
+    }
+
+    // Post-first-message: dispatch by state (mirrors existing webhook logic)
+    console.log("[spot:state_dispatch]", {
+      userId: args.userId,
+      state: user.state,
+      messageCount,
+    });
+
+    if (user.state === "no_policy_chat") {
+      await ctx.runAction(internal.noPolicyChat.handleNoPolicyChat, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_category") {
+      await ctx.runAction(internal.process.handleCategorySelection, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        uploadToken: args.uploadToken,
+        hasAttachment: false,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_email") {
+      await ctx.runAction(internal.process.handleEmailCollection, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_email_confirm") {
+      await ctx.runAction(internal.process.handleEmailConfirmation, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_merge_confirm") {
+      await ctx.runAction(internal.process.handleMergeConfirmation, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_clear_confirm") {
+      await ctx.runAction(internal.process.handleClearConfirmation, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_app_questions") {
+      await ctx.runAction(internal.process.handleAppQuestions, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_app_confirm") {
+      await ctx.runAction(internal.process.handleAppConfirmation, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_insurance_slip") {
+      await ctx.runAction(internal.process.handleInsuranceSlipResponse, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        uploadToken: args.uploadToken,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    if (user.state === "awaiting_policy") {
+      await ctx.runAction(internal.process.nudgeForPolicy, {
+        userId: args.userId,
+        phone: args.phone,
+        input: text,
+        uploadToken: args.uploadToken,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    // Default: active state → handleQuestion
+    await ctx.runAction(internal.process.handleQuestion, {
+      userId: args.userId,
+      question: text,
+      phone: args.phone,
+      uploadToken: args.uploadToken,
+      linqChatId: args.linqChatId,
+    });
+  },
+});
+
 export const handleCategorySelection = internalAction({
   args: {
     userId: v.id("users"),
