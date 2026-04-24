@@ -37,6 +37,22 @@ import { buildChunkSearchText } from "./retrievalUtils";
 // ── Helpers ──
 // detectCategory, isPartialPolicy, buildPolicySummary are imported from sdkAdapter
 
+const VOICE_CODEX = `voice:
+- lowercase unless proper noun
+- short bubbles — 1-2 sentences each, max
+- acknowledge what they said before pivoting
+- no "haha", "no worries", "great question", or assistant tics
+- no emojis unless they use one first (then match theirs sparingly)
+- chill friend who works in insurance, not a chatbot
+
+engagement (tennis not lecture):
+- short volleys, fast back-and-forth
+- one question per message max, don't stack
+- end with something that invites a reply
+- never dump the full answer in one bubble
+
+split your response into multiple short messages at natural breaks — don't emit walls of text.`;
+
 const CATEGORY_LABELS: Record<string, string> = {
   auto: "Auto",
   renters: "Renters",
@@ -2963,7 +2979,7 @@ Proactive awareness:
 
       const result = await generateTextWithFallback({
         model: getModel("qa"),
-        system: `${complianceGuardrails}\n\n${sdkPrompt}\n\nPolicies on file:\n${policyIndex}${ragContext}\n\nUser's email on file: ${user?.email || "none"}\nUser's name: ${user?.name || "Unknown"}${memoryBlock}${analysisNote}${pendingEmailNote}${contactsNote}${appNote}`,
+        system: `${VOICE_CODEX}\n\n---\n\n${complianceGuardrails}\n\n${sdkPrompt}\n\nPolicies on file:\n${policyIndex}${ragContext}\n\nUser's email on file: ${user?.email || "none"}\nUser's name: ${user?.name || "Unknown"}${memoryBlock}${analysisNote}${pendingEmailNote}${contactsNote}${appNote}`,
         messages: aiMessages,
         maxOutputTokens,
         tools: {
