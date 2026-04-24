@@ -99,3 +99,52 @@ export function getFiremarkLink(token: string): string {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://spot.claritylabs.inc";
   return `${baseUrl}/firemark/${token}`;
 }
+
+/**
+ * Linq-only: fire read receipt, pause briefly, then show typing indicator.
+ * All calls swallow errors — acknowledgement is cosmetic, never blocks reply.
+ *
+ * Call this at the top of Linq inbound handlers, before dispatching to the
+ * state machine, so the user sees "Read" + typing dots within ~500ms of sending.
+ */
+export async function acknowledgeInbound(
+  ctx: any,
+  linqChatId: string | undefined
+): Promise<void> {
+  if (!linqChatId) return;
+  try {
+    await ctx.runAction(internal.sendLinq.markRead, { chatId: linqChatId });
+  } catch (err) {
+    console.warn("[spot:ack_markRead_failed]", err);
+  }
+  await sleep(150 + Math.random() * 250); // 150-400ms pause, natural read-then-type beat
+  try {
+    await ctx.runAction(internal.sendLinq.startTyping, { chatId: linqChatId });
+  } catch (err) {
+    console.warn("[spot:ack_startTyping_failed]", err);
+  }
+}
+
+/**
+ * Rate-limit debounce. Collects rapid-fire inbound text into a 2s window
+ * keyed per user. On first message, returns { shouldScheduleFlush: true }
+ * and the caller must schedule processBufferedTurn 2s later. On subsequent
+ * messages within the window, just appends and returns { shouldScheduleFlush: false }.
+ *
+ * Attachments bypass debounce (caller should skip this helper when hasAttachment).
+ */
+export async function debounceInbound(
+  ctx: any,
+  userId: any,
+  text: string
+): Promise<{ shouldScheduleFlush: boolean }> {
+  const { isFirstInWindow } = await ctx.runMutation(
+    internal.users.appendMessageBuffer,
+    { userId, text }
+  );
+  console.log("[spot:debounce]", {
+    userId,
+    isFirstInWindow,
+  });
+  return { shouldScheduleFlush: isFirstInWindow };
+}

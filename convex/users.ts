@@ -233,3 +233,51 @@ export const submitPolicy = mutation({
     return { success: true };
   },
 });
+
+/**
+ * Debounce primitive — append an inbound message to the user's buffer.
+ * Returns { isFirstInWindow } — true if the buffer was empty before append,
+ * meaning the caller should schedule a processBufferedTurn in 2s.
+ */
+export const appendMessageBuffer = internalMutation({
+  args: {
+    userId: v.id("users"),
+    text: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) return { isFirstInWindow: false };
+
+    const existing = user.messageBuffer || [];
+    const wasEmpty = existing.length === 0;
+
+    await ctx.db.patch(args.userId, {
+      messageBuffer: [...existing, args.text],
+      messageBufferFirstAt: wasEmpty ? Date.now() : user.messageBufferFirstAt,
+    });
+
+    return { isFirstInWindow: wasEmpty };
+  },
+});
+
+/**
+ * Debounce primitive — read and clear the buffer.
+ * Returns the concatenated text and message count.
+ */
+export const drainMessageBuffer = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) return { text: "", messageCount: 0 };
+
+    const buffered = user.messageBuffer || [];
+    const text = buffered.join(" ").trim();
+
+    await ctx.db.patch(args.userId, {
+      messageBuffer: [],
+      messageBufferFirstAt: undefined,
+    });
+
+    return { text, messageCount: buffered.length };
+  },
+});
