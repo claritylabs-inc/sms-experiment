@@ -611,6 +611,16 @@ export const dispatchAttachment = internalAction({
     });
     if (!user) return;
 
+    // If user was still waiting on a category choice when they uploaded,
+    // move them to active so any in-flight text messages during extraction
+    // don't get re-routed to category parsing.
+    if (user.state === "awaiting_category") {
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "active",
+      });
+    }
+
     // awaiting_insurance_slip: process as slip
     if (user.state === "awaiting_insurance_slip") {
       await ctx.runAction(internal.process.processInsuranceSlip, {
