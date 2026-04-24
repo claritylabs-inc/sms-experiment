@@ -256,10 +256,15 @@ export const sendWelcome = internalAction({
     }
 
     await sendBurst(ctx, args.userId, args.phone, [
-      "Hey! This is Spot 👋",
-      "I can go through your insurance policy and tell you exactly what you're covered for — plus send proof of insurance, set reminders, and more",
-      "Is it auto, homeowners, renters, or something else?",
+      "hey, i'm spot",
+      "drop an insurance policy in here and i'll read it for you",
+      "what kind is it?",
     ], args.linqChatId, args.imessageSender);
+
+    await ctx.runMutation(internal.users.updateState, {
+      userId: args.userId,
+      state: "awaiting_category",
+    });
   },
 });
 
