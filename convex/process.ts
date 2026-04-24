@@ -340,8 +340,13 @@ export const processBufferedTurn = internalAction({
     });
     if (!user) return;
 
-    // First-message classifier (runs once per user lifetime)
-    if (!user.hasClassifiedFirstMessage) {
+    // First-message classifier (runs once per user lifetime).
+    // Also skip for users who've already moved past awaiting_category in
+    // prior flows — protects existing users from re-classification after
+    // this redesign ships.
+    const isGenuinelyNew = !user.hasClassifiedFirstMessage &&
+      (!user.state || user.state === "awaiting_category");
+    if (isGenuinelyNew) {
       const { intent, extractedCategory, noteForContext } = await ctx.runAction(
         internal.intent.classifyFirstMessage,
         { text }
