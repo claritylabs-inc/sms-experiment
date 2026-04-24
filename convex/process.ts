@@ -590,6 +590,61 @@ export const processBufferedTurn = internalAction({
   },
 });
 
+/**
+ * Attachment dispatch — bypasses debounce because attachments are inherently
+ * "here's a thing, deal with it now" messages. Mirrors the per-state
+ * attachment branches the webhook used to have inline.
+ */
+export const dispatchAttachment = internalAction({
+  args: {
+    userId: v.id("users"),
+    phone: v.string(),
+    uploadToken: v.string(),
+    linqChatId: v.optional(v.string()),
+    imessageSender: v.optional(v.string()),
+    mediaParts: v.array(v.object({ url: v.string(), mimeType: v.string() })),
+    userText: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user: any = await ctx.runQuery(internal.users.getUser, {
+      userId: args.userId,
+    });
+    if (!user) return;
+
+    // awaiting_insurance_slip: process as slip
+    if (user.state === "awaiting_insurance_slip") {
+      await ctx.runAction(internal.process.processInsuranceSlip, {
+        userId: args.userId,
+        attachments: args.mediaParts,
+        phone: args.phone,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+      });
+      return;
+    }
+
+    // Everything else: process as policy media
+    if (args.mediaParts.length > 1) {
+      await ctx.runAction(internal.process.processMultipleMedia, {
+        userId: args.userId,
+        attachments: args.mediaParts,
+        phone: args.phone,
+        userText: args.userText,
+        linqChatId: args.linqChatId,
+      });
+    } else {
+      await ctx.runAction(internal.process.processMedia, {
+        userId: args.userId,
+        mediaUrl: args.mediaParts[0].url,
+        mediaType: args.mediaParts[0].mimeType,
+        phone: args.phone,
+        userText: args.userText,
+        linqChatId: args.linqChatId,
+      });
+    }
+  },
+});
+
 export const handleCategorySelection = internalAction({
   args: {
     userId: v.id("users"),

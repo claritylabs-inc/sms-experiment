@@ -1,5 +1,6 @@
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { SANDBOX_PHONE } from "./sandbox";
 
 // Per Linq V3 docs: HMAC-SHA256(secret, "{timestamp}.{payload}"), hex-encoded
 // Secret is used as raw UTF-8 string, NOT base64-decoded
@@ -102,8 +103,10 @@ export const webhook = httpAction(async (ctx, request) => {
     return new Response("duplicate", { status: 200 });
   }
 
-  // Send read receipt — scheduled to avoid dangling promise in httpAction
-  await ctx.scheduler.runAfter(0, internal.sendLinq.markRead, { chatId });
+  // Acknowledge inbound (markRead + startTyping) — fire-and-forget, cosmetic only
+  await ctx.scheduler.runAfter(0, internal.sendHelpers.acknowledgeInboundScheduled, {
+    chatId,
+  });
 
   // Phase 2: Ingest message
   const result = await ctx.runMutation(internal.ingest.ingestLinqMessage, {
@@ -118,151 +121,48 @@ export const webhook = httpAction(async (ctx, request) => {
     return new Response("ok", { status: 200 });
   }
 
-  const { userId, state, uploadToken, linqChatId, isNewUser } = result;
+  const { userId, uploadToken, linqChatId } = result;
 
-  // Route based on state machine
-  if (isNewUser) {
-    await ctx.scheduler.runAfter(0, internal.process.sendWelcome, {
+  // ── Sandbox mode: scripted responses for demo phone ──
+  if (phone === SANDBOX_PHONE) {
+    await ctx.scheduler.runAfter(0, internal.sandbox.handleSandboxMessage, {
+      userId,
+      linqChatId: linqChatId || chatId,
+      phone,
+    });
+    return new Response("ok", { status: 200 });
+  }
+
+  // Attachments bypass debounce — dispatch immediately
+  if (hasAttachment) {
+    await ctx.scheduler.runAfter(0, internal.process.dispatchAttachment, {
+      userId,
+      phone,
+      uploadToken,
+      linqChatId,
+      mediaParts: mediaParts.map((a) => ({
+        url: a.url || "",
+        mimeType: a.mime_type || "application/pdf",
+      })),
+      userText: text,
+    });
+    return new Response("ok", { status: 200 });
+  }
+
+  // Text-only: route through 2s debounce → processBufferedTurn
+  const { isFirstInWindow } = await ctx.runMutation(
+    internal.users.appendMessageBuffer,
+    { userId, text }
+  );
+  console.log("[spot:debounce]", { userId, isFirstInWindow, channel: "linq" });
+
+  if (isFirstInWindow) {
+    await ctx.scheduler.runAfter(2000, internal.process.processBufferedTurn, {
       userId,
       phone,
       uploadToken,
       linqChatId,
     });
-  } else if (state === "awaiting_category") {
-    await ctx.scheduler.runAfter(
-      0,
-      internal.process.handleCategorySelection,
-      {
-        userId,
-        phone,
-        input: text,
-        uploadToken,
-        hasAttachment,
-        mediaUrl: hasAttachment ? mediaParts[0].url : undefined,
-        mediaType: hasAttachment ? mediaParts[0].mime_type : undefined,
-        linqChatId,
-      }
-    );
-  } else if (state === "awaiting_email") {
-    // User is providing their email address
-    await ctx.scheduler.runAfter(0, internal.process.handleEmailCollection, {
-      userId,
-      phone,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_email_confirm") {
-    // User is confirming/cancelling/undoing an email
-    await ctx.scheduler.runAfter(0, internal.process.handleEmailConfirmation, {
-      userId,
-      phone,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_merge_confirm") {
-    await ctx.scheduler.runAfter(0, internal.process.handleMergeConfirmation, {
-      userId,
-      phone,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_clear_confirm") {
-    await ctx.scheduler.runAfter(0, internal.process.handleClearConfirmation, {
-      userId,
-      phone,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_app_questions") {
-    await ctx.scheduler.runAfter(0, internal.process.handleAppQuestions, {
-      userId,
-      phone,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_app_confirm") {
-    await ctx.scheduler.runAfter(0, internal.process.handleAppConfirmation, {
-      userId,
-      phone,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_insurance_slip") {
-    if (hasAttachment) {
-      await ctx.scheduler.runAfter(0, internal.process.processInsuranceSlip, {
-        userId,
-        attachments: mediaParts.map((a) => ({ url: a.url || "", mimeType: a.mime_type || "application/pdf" })),
-        phone,
-        linqChatId,
-      });
-    } else {
-      await ctx.scheduler.runAfter(0, internal.process.handleInsuranceSlipResponse, {
-        userId,
-        phone,
-        input: text,
-        uploadToken,
-        linqChatId,
-      });
-    }
-  } else if (state === "awaiting_policy") {
-    if (hasAttachment) {
-      if (mediaParts.length > 1) {
-        await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
-          userId,
-          attachments: mediaParts.map((a) => ({ url: a.url || "", mimeType: a.mime_type || "application/pdf" })),
-          phone,
-          userText: text,
-          linqChatId,
-        });
-      } else {
-        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
-          userId,
-          mediaUrl: mediaParts[0].url || "",
-          mediaType: mediaParts[0].mime_type || "application/pdf",
-          phone,
-          userText: text,
-          linqChatId,
-        });
-      }
-    } else {
-      await ctx.scheduler.runAfter(0, internal.process.nudgeForPolicy, {
-        userId,
-        phone,
-        input: text,
-        uploadToken,
-        linqChatId,
-      });
-    }
-  } else {
-    // active state (or any other)
-    if (hasAttachment) {
-      if (mediaParts.length > 1) {
-        await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
-          userId,
-          attachments: mediaParts.map((a) => ({ url: a.url || "", mimeType: a.mime_type || "application/pdf" })),
-          phone,
-          userText: text,
-          linqChatId,
-        });
-      } else {
-        await ctx.scheduler.runAfter(0, internal.process.processMedia, {
-          userId,
-          mediaUrl: mediaParts[0].url || "",
-          mediaType: mediaParts[0].mime_type || "application/pdf",
-          phone,
-          userText: text,
-          linqChatId,
-        });
-      }
-    } else {
-      await ctx.scheduler.runAfter(0, internal.process.handleQuestion, {
-        userId,
-        question: text,
-        phone,
-        uploadToken,
-        linqChatId,
-      });
-    }
   }
 
   return new Response("ok", { status: 200 });

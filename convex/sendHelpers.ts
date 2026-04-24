@@ -1,5 +1,7 @@
 "use node";
 import { internal } from "./_generated/api";
+import { internalAction } from "./_generated/server";
+import { v } from "convex/values";
 
 // Channel-aware send: tries Linq first, then iMessage bridge, falls back to OpenPhone.
 // Guards against identical consecutive outbound messages.
@@ -148,3 +150,14 @@ export async function debounceInbound(
   });
   return { shouldScheduleFlush: isFirstInWindow };
 }
+
+/**
+ * Internal action wrapper so webhooks can schedule acknowledgeInbound
+ * via ctx.scheduler.runAfter (plain functions can't be scheduled).
+ */
+export const acknowledgeInboundScheduled = internalAction({
+  args: { chatId: v.string() },
+  handler: async (ctx, args) => {
+    await acknowledgeInbound(ctx, args.chatId);
+  },
+});
