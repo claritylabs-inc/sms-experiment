@@ -234,6 +234,23 @@ export const submitPolicy = mutation({
   },
 });
 
+export const setNoPolicyContext = internalMutation({
+  args: {
+    userId: v.id("users"),
+    context: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, { noPolicyContext: args.context });
+  },
+});
+
+export const getUser = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.userId);
+  },
+});
+
 /**
  * Debounce primitive — append an inbound message to the user's buffer.
  * Returns { isFirstInWindow } — true if the buffer was empty before append,

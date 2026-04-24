@@ -79,6 +79,21 @@ export const getRecentByUser = internalQuery({
   },
 });
 
+export const getRecent = internalQuery({
+  args: {
+    userId: v.id("users"),
+    limit: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const results = await ctx.db
+      .query("messages")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(args.limit);
+    return results.reverse(); // chronological order for prompt
+  },
+});
+
 export const getLastOutbound = internalQuery({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
