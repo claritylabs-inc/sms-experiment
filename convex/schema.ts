@@ -6,7 +6,7 @@ export default defineSchema({
     phone: v.string(),
     name: v.optional(v.string()),
     email: v.optional(v.string()),
-    state: v.optional(v.string()), // "awaiting_category" | "awaiting_policy" | "awaiting_email" | "awaiting_email_confirm" | "awaiting_insurance_slip" | "awaiting_merge_confirm" | "awaiting_clear_confirm" | "awaiting_app_questions" | "awaiting_app_confirm" | "active"
+    state: v.optional(v.string()), // "awaiting_category" | "awaiting_policy" | "awaiting_email" | "awaiting_email_confirm" | "awaiting_insurance_slip" | "awaiting_merge_confirm" | "awaiting_clear_confirm" | "awaiting_app_questions" | "awaiting_app_confirm" | "no_policy_chat" | "active"
     preferredCategory: v.optional(v.string()),
     uploadToken: v.optional(v.string()),
     linqChatId: v.optional(v.string()), // Linq chat ID for ongoing conversation
@@ -19,6 +19,12 @@ export default defineSchema({
     activeApplicationId: v.optional(v.id("applications")), // currently active application being filled
     autoFillApplications: v.optional(v.boolean()), // skip confirmation for application filling (/autofill on)
     portfolioAnalysis: v.optional(v.any()), // { overlaps[], gaps[], suggestions[], naturalSummary, generatedAt }
+    // --- Human-conversation redesign (2026-04-24) ---
+    noPolicyContext: v.optional(v.string()), // running summary from no-policy discovery chat
+    categoryAttempts: v.optional(v.number()), // count of failed category parses, for 2-attempt fallback
+    hasClassifiedFirstMessage: v.optional(v.boolean()), // true once first-message intent classifier has run
+    messageBufferFirstAt: v.optional(v.number()), // timestamp of first message in current 2s debounce window
+    messageBuffer: v.optional(v.array(v.string())), // buffered inbound text for 2s debounce window
     lastActiveAt: v.number(),
     createdAt: v.number(),
   })
