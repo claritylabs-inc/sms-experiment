@@ -78,3 +78,16 @@ export const getRecentByUser = internalQuery({
     return messages.reverse(); // return in chronological order
   },
 });
+
+export const getLastOutbound = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const results = await ctx.db
+      .query("messages")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .filter((q) => q.eq(q.field("direction"), "outbound"))
+      .order("desc")
+      .take(1);
+    return results[0] || null;
+  },
+});
