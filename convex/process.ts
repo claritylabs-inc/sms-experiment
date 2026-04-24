@@ -758,7 +758,7 @@ export const nudgeForPolicy = internalAction({
           ctx,
           args.userId,
           args.phone,
-          "No problem — just send me that PDF or photo right here",
+          "ok cool, drop the pdf or photo in here",
           args.linqChatId,
           args.imessageSender
         );
@@ -768,7 +768,7 @@ export const nudgeForPolicy = internalAction({
           ctx,
           args.userId,
           args.phone,
-          `No problem. Drop that one here\n\n${link}`,
+          `ok cool, drop it here\n\n${link}`,
         );
       }
       return;
@@ -778,8 +778,8 @@ export const nudgeForPolicy = internalAction({
       const isImChannel = !!(args.linqChatId || args.imessageSender);
       await sendAndLog(ctx, args.userId, args.phone,
         isImChannel
-          ? "No worries, go ahead and send it again — just drop the PDF or photo right here"
-          : `No worries — try uploading again here:\n\n${getUploadLink(args.uploadToken)}`,
+          ? "all good, try again — just drop the pdf or photo in here"
+          : `all good, try uploading again here:\n\n${getUploadLink(args.uploadToken)}`,
         args.linqChatId, args.imessageSender);
     } else {
       // Use AI to respond naturally while steering toward uploading
@@ -787,11 +787,17 @@ export const nudgeForPolicy = internalAction({
       const link = getUploadLink(args.uploadToken);
       const { text: response } = await generateTextWithFallback({
         model: getModel("qa_simple"),
-        system: `You are Spot, a chill insurance assistant. The user hasn't sent their policy yet. You need the policy document to help them.
-Your job: respond to what they said naturally, then steer them toward sending you their policy.
-${isImChannel ? "They can send a PDF or photo of the policy right in this chat, or use the upload link." : "They need to use the upload link."}
-Upload link: ${link}
-Keep it short — 1-2 sentences max. Be friendly, not robotic. Don't repeat yourself.`,
+        system: `you're spot — a chill friend who reads insurance policies. this person hasn't sent theirs yet.
+
+respond to what they said naturally, then nudge them toward sending the policy.
+${isImChannel ? "they can send a pdf or photo of the policy right here in the chat." : `they need to use the upload link: ${link}`}
+
+voice:
+- lowercase unless proper noun
+- 1-2 short sentences max, not paragraphs
+- no "haha", "no worries", "great question", or assistant tics
+- no emojis unless they used one first
+- chill friend, not a chatbot`,
         prompt: args.input,
         maxOutputTokens: 150,
       });
