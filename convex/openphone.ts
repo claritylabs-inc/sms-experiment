@@ -38,135 +38,33 @@ export const webhook = httpAction(async (ctx, request) => {
     return new Response("ok", { status: 200 });
   }
 
-  const { userId, state, uploadToken, linqChatId, isNewUser } = result;
+  const { userId, uploadToken } = result;
 
-  // Route based on state machine
-  if (isNewUser) {
-    await ctx.scheduler.runAfter(0, internal.process.sendWelcome, {
+  // Attachments bypass debounce — dispatch immediately
+  if (media.length > 0) {
+    await ctx.scheduler.runAfter(0, internal.process.dispatchAttachment, {
       userId,
       phone: from,
       uploadToken,
-      linqChatId,
+      mediaParts: media.map((a) => ({ url: a.url, mimeType: a.type || "application/pdf" })),
+      userText: text,
     });
-  } else if (state === "awaiting_category") {
-    await ctx.scheduler.runAfter(0, internal.process.handleCategorySelection, {
+    return new Response("ok", { status: 200 });
+  }
+
+  // Text-only: route through 2s debounce → processBufferedTurn
+  const { isFirstInWindow } = await ctx.runMutation(
+    internal.users.appendMessageBuffer,
+    { userId, text }
+  );
+  console.log("[spot:debounce]", { userId, isFirstInWindow, channel: "openphone" });
+
+  if (isFirstInWindow) {
+    await ctx.scheduler.runAfter(2000, internal.process.processBufferedTurn, {
       userId,
       phone: from,
-      input: text,
       uploadToken,
-      hasAttachment: media.length > 0,
-      mediaUrl: media.length > 0 ? media[0].url : undefined,
-      mediaType: media.length > 0 ? media[0].type : undefined,
-      linqChatId,
     });
-  } else if (state === "awaiting_email") {
-    await ctx.scheduler.runAfter(0, internal.process.handleEmailCollection, {
-      userId,
-      phone: from,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_email_confirm") {
-    await ctx.scheduler.runAfter(0, internal.process.handleEmailConfirmation, {
-      userId,
-      phone: from,
-      input: text,
-      linqChatId,
-    });
-  } else if (state === "awaiting_merge_confirm") {
-    await ctx.scheduler.runAfter(0, internal.process.handleMergeConfirmation, {
-      userId,
-      phone: from,
-      input: text,
-    });
-  } else if (state === "awaiting_clear_confirm") {
-    await ctx.scheduler.runAfter(0, internal.process.handleClearConfirmation, {
-      userId,
-      phone: from,
-      input: text,
-    });
-  } else if (state === "awaiting_app_questions") {
-    await ctx.scheduler.runAfter(0, internal.process.handleAppQuestions, {
-      userId,
-      phone: from,
-      input: text,
-    });
-  } else if (state === "awaiting_app_confirm") {
-    await ctx.scheduler.runAfter(0, internal.process.handleAppConfirmation, {
-      userId,
-      phone: from,
-      input: text,
-    });
-  } else if (state === "awaiting_insurance_slip") {
-    if (media.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.process.processInsuranceSlip, {
-        userId,
-        attachments: media.map((a) => ({ url: a.url, mimeType: a.type || "application/pdf" })),
-        phone: from,
-      });
-    } else {
-      await ctx.scheduler.runAfter(0, internal.process.handleInsuranceSlipResponse, {
-        userId,
-        phone: from,
-        input: text,
-        uploadToken,
-      });
-    }
-  } else if (state === "awaiting_policy") {
-    if (media.length > 1) {
-      await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
-        userId,
-        attachments: media.map((a) => ({ url: a.url, mimeType: a.type || "application/pdf" })),
-        phone: from,
-        userText: text,
-        linqChatId,
-      });
-    } else if (media.length === 1) {
-      await ctx.scheduler.runAfter(0, internal.process.processMedia, {
-        userId,
-        mediaUrl: media[0].url,
-        mediaType: media[0].type || "application/pdf",
-        phone: from,
-        userText: text,
-        linqChatId,
-      });
-    } else {
-      await ctx.scheduler.runAfter(0, internal.process.nudgeForPolicy, {
-        userId,
-        phone: from,
-        input: text,
-        uploadToken,
-        linqChatId,
-      });
-    }
-  } else {
-    // active state
-    if (media.length > 1) {
-      await ctx.scheduler.runAfter(0, internal.process.processMultipleMedia, {
-        userId,
-        attachments: media.map((a) => ({ url: a.url, mimeType: a.type || "application/pdf" })),
-        phone: from,
-        userText: text,
-        linqChatId,
-      });
-    } else if (media.length === 1) {
-      await ctx.scheduler.runAfter(0, internal.process.processMedia, {
-        userId,
-        mediaUrl: media[0].url,
-        mediaType: media[0].type || "application/pdf",
-        phone: from,
-        userText: text,
-        linqChatId,
-      });
-    } else {
-      await ctx.scheduler.runAfter(0, internal.process.handleQuestion, {
-        userId,
-        question: text,
-        phone: from,
-        uploadToken,
-        linqChatId,
-      });
-    }
   }
 
   return new Response("ok", { status: 200 });
