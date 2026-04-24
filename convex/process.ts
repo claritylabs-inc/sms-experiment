@@ -90,6 +90,29 @@ function parseCategoryInput(input: string): string | null {
   return null;
 }
 
+function detectNoPolicyIntent(input: string): boolean {
+  const clean = input.toLowerCase().trim();
+  const phrases = [
+    "don't have",
+    "dont have",
+    "do not have",
+    "no insurance",
+    "none",
+    "nothing yet",
+    "haven't got",
+    "havent got",
+    "haven't gotten",
+    "new to",
+    "just moved",
+    "looking to get",
+    "looking for",
+    "shopping for",
+    "no policy",
+    "no policies",
+  ];
+  return phrases.some((p) => clean.includes(p));
+}
+
 type PolicyLookupRecord = {
   _id: unknown;
   carrier?: string;
@@ -582,60 +605,124 @@ export const handleCategorySelection = internalAction({
 
     const category = parseCategoryInput(args.input);
 
-    if (!category) {
-      await sendAndLog(
+    if (category) {
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "awaiting_policy",
+        preferredCategory: category,
+      });
+      await ctx.runMutation(internal.users.resetCategoryAttempts, {
+        userId: args.userId,
+      });
+
+      const labels: Record<string, string> = {
+        auto: "auto",
+        homeowners: "homeowners",
+        renters: "renters",
+        other: "",
+      };
+      const label = labels[category] || category;
+      const isImessageChannel = !!(args.linqChatId || args.imessageSender);
+
+      if (isImessageChannel) {
+        if (category === "other") {
+          await sendBurst(ctx, args.userId, args.phone, [
+            "ok cool",
+            "send the pdf or photo whenever you have it",
+          ], args.linqChatId, args.imessageSender);
+        } else {
+          await sendBurst(ctx, args.userId, args.phone, [
+            `${label}, cool`,
+            "drop the pdf or a photo in here",
+          ], args.linqChatId, args.imessageSender);
+        }
+      } else {
+        const link = getUploadLink(args.uploadToken);
+        if (category === "other") {
+          await sendBurst(ctx, args.userId, args.phone, [
+            "ok cool",
+            "drop your policy here whenever you have it",
+            link,
+          ]);
+        } else {
+          await sendBurst(ctx, args.userId, args.phone, [
+            `${label}, cool`,
+            "drop your policy here and i'll go through it",
+            link,
+          ]);
+        }
+      }
+      return;
+    }
+
+    // Category parsing failed — check for no-policy intent first
+    if (detectNoPolicyIntent(args.input)) {
+      console.log("[spot:category_to_no_policy]", {
+        userId: args.userId,
+        input: args.input.slice(0, 80),
+      });
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "no_policy_chat",
+      });
+      await ctx.runAction(internal.noPolicyChat.handleNoPolicyChat, {
+        userId: args.userId,
+        phone: args.phone,
+        input: args.input,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+        seedContext: `user was asked to pick a category but said they don't have one. their exact words: "${args.input}". start discovery.`,
+      });
+      return;
+    }
+
+    // Genuinely unclear — track attempt counter and route accordingly
+    const attempts: number = await ctx.runMutation(internal.users.incrementCategoryAttempts, {
+      userId: args.userId,
+    });
+
+    console.log("[spot:category_fallback]", {
+      userId: args.userId,
+      attempts,
+      input: args.input.slice(0, 80),
+    });
+
+    if (attempts === 1) {
+      await sendBurst(
         ctx,
         args.userId,
         args.phone,
-        `Haha no worries, is it auto, homeowners, renters, or something else?`,
+        ["not sure i followed — auto, renters, homeowners, or something else?"],
         args.linqChatId,
         args.imessageSender
       );
       return;
     }
 
-    await ctx.runMutation(internal.users.updateState, {
-      userId: args.userId,
-      state: "awaiting_policy",
-      preferredCategory: category,
-    });
-
-    const labels: Record<string, string> = {
-      auto: "auto",
-      homeowners: "homeowners",
-      renters: "renter's",
-      other: "",
-    };
-    const label = labels[category] || category;
-    const isImessageChannel = !!(args.linqChatId || args.imessageSender);
-
-    if (isImessageChannel) {
-      if (category === "other") {
-        await sendBurst(ctx, args.userId, args.phone, [
-          "Works for me",
-          "Just send me the PDF or a photo of the doc right here and I'll take a look",
-        ], args.linqChatId, args.imessageSender);
-      } else {
-        await sendBurst(ctx, args.userId, args.phone, [
-          `${label}, got it`,
-          "Just send me the PDF or a photo right here and I'll go through it",
-        ], args.linqChatId, args.imessageSender);
-      }
-    } else {
-      const link = getUploadLink(args.uploadToken);
-      if (category === "other") {
-        await sendBurst(ctx, args.userId, args.phone, [
-          "Works for me",
-          `Drop your policy here and I'll take a look`,
-          link,
-        ]);
-      } else {
-        await sendBurst(ctx, args.userId, args.phone, [
-          `${label}, got it`,
-          "Drop your policy here and I'll go through it",
-          link,
-        ]);
-      }
+    // Attempt 2+ → LLM clarifier via noPolicyChat
+    try {
+      await ctx.runMutation(internal.users.updateState, {
+        userId: args.userId,
+        state: "no_policy_chat",
+      });
+      await ctx.runAction(internal.noPolicyChat.handleNoPolicyChat, {
+        userId: args.userId,
+        phone: args.phone,
+        input: args.input,
+        linqChatId: args.linqChatId,
+        imessageSender: args.imessageSender,
+        seedContext: `user was asked to pick a category but keeps not matching. their exact words: "${args.input}". figure out what they're actually trying to do — upload a policy, looking for coverage, or something else.`,
+      });
+    } catch (err) {
+      console.warn("[spot:category_llm_clarifier_failed]", { userId: args.userId, err: String(err) });
+      await sendBurst(
+        ctx,
+        args.userId,
+        args.phone,
+        ["sorry, having a moment", "are you trying to upload a policy or looking for coverage?"],
+        args.linqChatId,
+        args.imessageSender
+      );
     }
   },
 });

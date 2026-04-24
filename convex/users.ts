@@ -305,3 +305,20 @@ export const markFirstMessageClassified = internalMutation({
     await ctx.db.patch(args.userId, { hasClassifiedFirstMessage: true });
   },
 });
+
+export const incrementCategoryAttempts = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    const attempts = (user?.categoryAttempts || 0) + 1;
+    await ctx.db.patch(args.userId, { categoryAttempts: attempts });
+    return attempts;
+  },
+});
+
+export const resetCategoryAttempts = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.userId, { categoryAttempts: 0 });
+  },
+});
