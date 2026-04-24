@@ -6,7 +6,8 @@ import { sendAndLog, sendBurst, sleep } from "./sendHelpers";
 
 // ── Sandbox phone gate ──
 // Only this number gets scripted responses. Everything else flows normally.
-export const SANDBOX_PHONE = "+16479221805";
+// Placeholder — set to the actual demo phone before going live with a scripted demo.
+export const SANDBOX_PHONE = "+10000000000";
 
 // ── Demo script ──
 // Sequential: step N = Nth inbound message (0-indexed).
