@@ -84,8 +84,19 @@ function friendlyCategoryLabel(category: string, policyTypes?: string[]): string
 
 // buildPolicySummary and isPartialPolicy are imported from sdkAdapter
 
+// iOS autocorrect uses curly quotes (U+2018/U+2019/U+201C/U+201D) instead of
+// ASCII '/". Normalize them so keyword matching ("don't have", "didn't work",
+// etc.) doesn't silently miss real user phrasings.
+function normalizeText(input: string): string {
+  return input
+    .replace(/[‘’ʼ]/g, "'")
+    .replace(/[“”]/g, '"')
+    .toLowerCase()
+    .trim();
+}
+
 function parseCategoryInput(input: string): string | null {
-  const clean = input.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+  const clean = normalizeText(input).replace(/[^a-z0-9\s]/g, "").trim();
   if (!clean) return null;
 
   if (clean === "1") return "auto";
@@ -107,7 +118,7 @@ function parseCategoryInput(input: string): string | null {
 }
 
 function detectNoPolicyIntent(input: string): boolean {
-  const clean = input.toLowerCase().trim();
+  const clean = normalizeText(input);
   const phrases = [
     "don't have",
     "dont have",
@@ -814,7 +825,7 @@ export const handleCategorySelection = internalAction({
 });
 
 function isRetryIntent(input: string): boolean {
-  const clean = input.toLowerCase().trim();
+  const clean = normalizeText(input);
   const retryPhrases = [
     "try again", "retry", "again", "resend", "re-send",
     "one more time", "let me try", "didn't work", "not working",
@@ -1484,7 +1495,7 @@ export const handleInsuranceSlipResponse = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const clean = args.input.toLowerCase().trim();
+    const clean = normalizeText(args.input);
     const skipWords = ["no", "nah", "nope", "skip", "don't have one", "dont have one", "no thanks", "not right now", "later", "maybe later", "i don't", "i dont", "none", "n"];
 
     if (skipWords.some((w) => clean === w || clean.includes(w))) {
@@ -1661,7 +1672,7 @@ export const handleMergeConfirmation = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const clean = args.input.toLowerCase().trim();
+    const clean = normalizeText(args.input);
     const user = await ctx.runQuery(internal.users.get, { userId: args.userId });
 
     if (!user?.pendingMergePolicyId || !user?.pendingMergeStorageId) {
@@ -1716,7 +1727,7 @@ export const handleClearConfirmation = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const clean = args.input.toLowerCase().trim();
+    const clean = normalizeText(args.input);
 
     const confirmExact = ["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "go", "do it", "go ahead", "sounds good", "please", "y"];
     const denyExact = ["no", "nah", "nope", "cancel", "nevermind", "never mind", "n"];
@@ -1927,7 +1938,7 @@ export const handleEmailConfirmation = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const clean = args.input.toLowerCase().trim();
+    const clean = normalizeText(args.input);
     const pending = await ctx.runQuery(internal.email.getPendingForUser, {
       userId: args.userId,
     });
@@ -2034,7 +2045,7 @@ export const handleEmailCollection = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const clean = args.input.toLowerCase().trim();
+    const clean = normalizeText(args.input);
 
     // If user replies with a confirmation word (not an email), they might be confirming
     // a prior email that Claude asked about. Check if we already have their email on file.
@@ -2166,7 +2177,7 @@ export const handleAppQuestions = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const clean = args.input.toLowerCase().trim();
+    const clean = normalizeText(args.input);
 
     // Check for /autofill toggle
     if (clean === "/autofill on") {
@@ -2475,7 +2486,7 @@ export const handleAppConfirmation = internalAction({
     imessageSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const clean = args.input.toLowerCase().trim();
+    const clean = normalizeText(args.input);
 
     // Allow cancel — broad intent matching
     if (clean === "no" || isCancelIntent(clean)) {
@@ -2530,7 +2541,7 @@ export const handleQuestion = internalAction({
   },
   handler: async (ctx, args) => {
     try {
-      const clean = args.question.toLowerCase().trim();
+      const clean = normalizeText(args.question);
 
       // /help command — list all available commands
       if (clean === "/help" || clean === "help" || clean === "commands") {
