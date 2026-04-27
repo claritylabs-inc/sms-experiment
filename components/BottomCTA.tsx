@@ -1,13 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LogoIcon } from "@/components/LogoIcon";
-import { FadeIn } from "@/components/FadeIn";
+import { TrySpotCTA } from "@/components/TrySpotCTA";
 import {
-  PHONE_NUMBER,
-  SMS_LINK,
   AI_DIRECT_LINKS,
   AI_COPY_PASTE_PROVIDERS,
   AI_COPY_PASTE_PROMPT,
@@ -118,29 +115,8 @@ export function BottomCTA() {
           />
           <div className="absolute inset-0 bg-black/40" />
         </div>
-        <div className="relative z-10 w-full px-6 flex-1 flex items-center">
-          <div className="mx-auto max-w-lg text-center text-white">
-            <FadeIn>
-              <h2 className="font-heading text-4xl sm:text-5xl tracking-tight mb-4">
-                Try it now
-              </h2>
-            </FadeIn>
-            <FadeIn delay={0.15}>
-              <p className="text-white/80 mb-8">
-                Send us your full insurance policy over SMS. Takes about 10
-                seconds.
-              </p>
-            </FadeIn>
-            <FadeIn delay={0.3}>
-              <a
-                href={SMS_LINK}
-                className="rounded-full px-8 h-12 text-base shadow-lg shadow-black/10 gap-2 inline-flex items-center font-medium bg-white text-black hover:bg-white/90 transition-colors"
-              >
-                <MessageSquare className="size-4" />
-                Text {PHONE_NUMBER}
-              </a>
-            </FadeIn>
-          </div>
+        <div className="relative z-10 w-full px-6 flex-1 flex items-center justify-center py-16">
+          <TrySpotCTA />
         </div>
 
         {/* Footer */}

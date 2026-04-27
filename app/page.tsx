@@ -5,6 +5,7 @@ import { UseCasesSection } from "@/components/UseCasesSection";
 import { HowItWorksSection } from "@/components/HowItWorksSection";
 import { FAQSection } from "@/components/FAQSection";
 import { BottomCTA } from "@/components/BottomCTA";
+import { FloatingMessageSpot } from "@/components/FloatingMessageSpot";
 
 export default function Home() {
   const jsonLd = {
@@ -43,6 +44,7 @@ export default function Home() {
         <FAQSection />
         <BottomCTA />
       </main>
+      <FloatingMessageSpot />
     </>
   );
 }

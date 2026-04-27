@@ -1,10 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { MessageSquare } from "lucide-react";
 import { FadeIn } from "@/components/FadeIn";
 import { StaggerCard } from "@/components/StaggerCard";
-import { SMS_LINK, PHONE_NUMBER } from "@/lib/constants";
 
 const CARDS = [
   {
@@ -39,15 +37,6 @@ export function SpotIsSection() {
               Send your full policy over text. Spot reads it and texts you back what&apos;s covered,
               what&apos;s not, and what to watch out for — all in plain English.
             </p>
-          </FadeIn>
-          <FadeIn delay={0.2}>
-            <a
-              href={SMS_LINK}
-              className="rounded-full px-8 h-12 text-base shadow-lg shadow-black/5 gap-2 inline-flex items-center font-medium bg-[#111827] text-white hover:bg-[#111827]/85 transition-colors"
-            >
-              <MessageSquare className="size-4" />
-              Text {PHONE_NUMBER}
-            </a>
           </FadeIn>
 
           {/* 3 photo cards */}

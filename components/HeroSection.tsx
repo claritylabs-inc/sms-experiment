@@ -2,10 +2,10 @@
 
 import { useRef } from "react";
 import { motion, useScroll, useTransform } from "framer-motion";
-import { MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LogoIcon } from "@/components/LogoIcon";
-import { PHONE_NUMBER, SMS_LINK } from "@/lib/constants";
+import { MessageSpotButton } from "@/components/MessageSpotButton";
+import { PHONE_NUMBER } from "@/lib/constants";
 import Image from "next/image";
 
 function ClarityLogo({
@@ -69,14 +69,10 @@ export function HeroSection() {
           with what&apos;s covered, what&apos;s not, and what to look out for.
         </p>
         <div className="mt-8 flex flex-col items-center gap-3 hero-fade-in hero-delay-4">
-          <a
-            href={SMS_LINK}
-            className="rounded-full px-8 h-12 text-base shadow-lg shadow-black/10 gap-2 inline-flex items-center font-medium bg-white text-black hover:bg-white/90 transition-colors"
-          >
-            <MessageSquare className="size-4" />
-            Text {PHONE_NUMBER}
-          </a>
-          <p className="text-xs text-white">Free &bull; No app required</p>
+          <MessageSpotButton />
+          <p className="text-xs text-white/80">
+            {PHONE_NUMBER} &bull; Free &bull; No app required
+          </p>
         </div>
       </motion.div>
 
